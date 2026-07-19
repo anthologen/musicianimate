@@ -22,31 +22,41 @@ import bpy
 import bmesh
 import mathutils
 
-# ---------------------------------------------------------------------------
-# Geometry constants (metres). Change BODY_COLOR / SCALE_LEN etc. to taste.
-# ---------------------------------------------------------------------------
-SCALE_LEN = 0.648          # nut-to-bridge speaking length (25.5")
-NUM_FRETS = 22
-NUM_STRINGS = 6
+try:
+    from . import fret_layout
+except ImportError:  # running as a loose script inside Blender
+    import os
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import fret_layout
 
-BRIDGE_Y = 0.0             # bridge saddles sit here, on the body
-NUT_Y = BRIDGE_Y + SCALE_LEN
+# ---------------------------------------------------------------------------
+# Geometry constants (metres). The neck/string dimensions shared with the
+# fingering engine live in fret_layout (the source of truth); the rest are
+# render-only. Change BODY_COLOR etc. to taste.
+# ---------------------------------------------------------------------------
+SCALE_LEN = fret_layout.SCALE_LEN   # nut-to-bridge speaking length (25.5")
+NUM_FRETS = fret_layout.NUM_FRETS
+NUM_STRINGS = fret_layout.NUM_STRINGS
+
+BRIDGE_Y = fret_layout.BRIDGE_Y    # bridge saddles sit here, on the body
+NUT_Y = fret_layout.NUT_Y
 
 BODY_Y0, BODY_Y1 = -0.20, 0.25     # body extent along the neck axis
 BODY_W = 0.33                       # widest point of the slab
 BODY_THICK = 0.045
 
-NECK_THICK = 0.021                  # wood behind the fretboard
-FB_THICK = 0.006                    # fretboard
+NECK_THICK = fret_layout.NECK_THICK  # wood behind the fretboard
+FB_THICK = fret_layout.FB_THICK      # fretboard
 FB_Y0 = 0.16                        # fretboard overhangs the body to reach fret 22
 HEEL_Y = BODY_Y1                    # neck wood joins the body here
 
 NUT_W = 0.043                       # neck width at the nut
 END_W = 0.058                       # neck width at the fretboard's body end
 
-FRET_H = 0.0012
+FRET_H = fret_layout.FRET_H
 STRING_R = 0.0006
-STRING_Z = NECK_THICK + FB_THICK + 0.004   # string plane above the fretboard
+STRING_Z = fret_layout.STRING_Z    # string plane above the fretboard
 
 HEAD_LEN = 0.17
 HEAD_W = 0.072
@@ -180,7 +190,7 @@ def build_neck_and_fretboard(coll):
 
     fb_top = NECK_THICK + FB_THICK
     for n in range(1, NUM_FRETS + 1):
-        y = NUT_Y - SCALE_LEN * (1.0 - 2.0 ** (-n / 12.0))
+        y = fret_layout.fret_y(n)
         if y < FB_Y0:
             continue
         w = _neck_width(y) - 0.002
@@ -217,14 +227,10 @@ def build_headstock(coll):
 def build_strings(coll, tuner_tops):
     """Six strings fanning from the bridge to the nut, then breaking down to the
     tuner posts. Low-E is string 0 on the bass (-x) side."""
-    bridge_span, nut_span = 0.052, 0.035
     for i in range(NUM_STRINGS):
-        f = (i - (NUM_STRINGS - 1) / 2.0) / (NUM_STRINGS - 1)
         r = STRING_R * (1.0 - 0.35 * i / (NUM_STRINGS - 1))  # bass strings thicker
-        x_bridge = f * bridge_span
-        x_nut = f * nut_span
-        speaking_a = (x_bridge, BRIDGE_Y, STRING_Z)
-        speaking_b = (x_nut, NUT_Y, STRING_Z)
+        speaking_a = (fret_layout.string_x(i, BRIDGE_Y), BRIDGE_Y, STRING_Z)
+        speaking_b = (fret_layout.string_x(i, NUT_Y), NUT_Y, STRING_Z)
         _add_cylinder_between(coll, f"Guitar_String_{i}", speaking_a, speaking_b, r, segments=8)
         # From the nut over the headstock to the post.
         _add_cylinder_between(coll, f"Guitar_StringHead_{i}",
