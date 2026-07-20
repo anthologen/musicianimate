@@ -223,18 +223,27 @@ def _state_cost(state, factor):
     if over > 0:
         cost += WEIGHTS["span_comf"] * over
 
-    # A barre collapses to a single finger-1 entry for the per-finger
-    # ordering and weakness checks below.
+    # A barre collapses to a single finger-1 entry for the weakness and
+    # lowest-fret checks, and is left out of the finger-ordering check
+    # entirely: a flattened bar isn't a curled finger, and both the
+    # E-shape (bar + next fret) and A-shape (bar + two frets up) are
+    # standard forms.
     barred = [x for x in fretted if x[2] == 1]
     if len(barred) >= 2:
         strings = [s for _, s, _ in barred]
         cost += (WEIGHTS["barre"]
                  + WEIGHTS["barre_string"] * (max(strings) - min(strings) + 1))
-        entries = sorted([barred[0]] + [x for x in fretted if x[2] != 1])
+        curled = sorted(x for x in fretted if x[2] != 1)
+        entries = sorted([barred[0]] + curled)
     else:
+        curled = fretted
         entries = fretted
-    for (f1, _, g1), (f2, _, g2) in zip(entries, entries[1:]):
-        cost += WEIGHTS["finger_fret_mismatch"] * abs((g2 - g1) - (f2 - f1))
+    # Fingers should climb with the frets; stacking adjacent fingers on
+    # one fret (Am, E, A-shape grips) is natural, so a fret tie expects a
+    # finger step of 1, not 0.
+    for (f1, _, g1), (f2, _, g2) in zip(curled, curled[1:]):
+        cost += (WEIGHTS["finger_fret_mismatch"]
+                 * abs((g2 - g1) - max(f2 - f1, 1)))
     for _, _, g in entries:
         if g == 3:
             cost += WEIGHTS["weak_ring"]
@@ -633,6 +642,88 @@ def selftest():
 
 
 # ---------------------------------------------------------------------------
+# Benchmark: well-known chord grips
+# ---------------------------------------------------------------------------
+
+# (name, midi pitches, {midi: (string, fret, finger)}). finger None means
+# the canonical fingering is ambiguous (players use several); only the
+# tab is checked for those notes.
+BENCHMARK_CHORDS = [
+    ("C major  x32010", (48, 52, 55, 60, 64),
+     {48: (1, 3, 3), 52: (2, 2, 2), 55: (3, 0, 0),
+      60: (4, 1, 1), 64: (5, 0, 0)}),
+    ("A minor  x02210", (45, 52, 57, 60, 64),
+     {45: (1, 0, 0), 52: (2, 2, 2), 57: (3, 2, 3),
+      60: (4, 1, 1), 64: (5, 0, 0)}),
+    ("E major  022100", (40, 47, 52, 56, 59, 64),
+     {40: (0, 0, 0), 47: (1, 2, 2), 52: (2, 2, 3),
+      56: (3, 1, 1), 59: (4, 0, 0), 64: (5, 0, 0)}),
+    ("E minor  022000", (40, 47, 52, 55, 59, 64),
+     {40: (0, 0, 0), 47: (1, 2, None), 52: (2, 2, None),
+      55: (3, 0, 0), 59: (4, 0, 0), 64: (5, 0, 0)}),
+    ("D major  xx0232", (50, 57, 62, 66),
+     {50: (2, 0, 0), 57: (3, 2, 1), 62: (4, 3, 3), 66: (5, 2, 2)}),
+    ("D minor  xx0231", (50, 57, 62, 65),
+     {50: (2, 0, 0), 57: (3, 2, 2), 62: (4, 3, 3), 65: (5, 1, 1)}),
+    ("G major  320003", (43, 47, 50, 55, 59, 67),
+     {43: (0, 3, 2), 47: (1, 2, 1), 50: (2, 0, 0),
+      55: (3, 0, 0), 59: (4, 0, 0), 67: (5, 3, 3)}),
+    ("A major  x02220", (45, 52, 57, 61, 64),
+     {45: (1, 0, 0), 52: (2, 2, 1), 57: (3, 2, 2),
+      61: (4, 2, 3), 64: (5, 0, 0)}),
+    ("F major  133211 barre", (41, 48, 53, 57, 60, 65),
+     {41: (0, 1, 1), 48: (1, 3, 3), 53: (2, 3, 4),
+      57: (3, 2, 2), 60: (4, 1, 1), 65: (5, 1, 1)}),
+    ("B minor  x24432 barre", (47, 54, 59, 62, 66),
+     {47: (1, 2, 1), 54: (2, 4, 3), 59: (3, 4, 4),
+      62: (4, 3, 2), 66: (5, 2, 1)}),
+    ("B major  x24442 barre", (47, 54, 59, 63, 66),
+     {47: (1, 2, 1), 54: (2, 4, 2), 59: (3, 4, 3),
+      63: (4, 4, 4), 66: (5, 2, 1)}),
+    ("G major  355433 barre", (43, 50, 55, 59, 62, 67),
+     {43: (0, 3, 1), 50: (1, 5, 3), 55: (2, 5, 4),
+      59: (3, 4, 2), 62: (4, 3, 1), 67: (5, 3, 1)}),
+]
+
+
+def _tab_string(got):
+    """Render {string: fret} as the usual low-E-first tab word, e.g.
+    x32010."""
+    frets = {s: f for s, f, _ in got.values()}
+    return "".join(str(frets[s]) if s in frets else "x" for s in range(6))
+
+
+def benchmark():
+    """Check the engine against well-known chord grips; exit non-zero if
+    any tab (string/fret choice) or unambiguous fingering is wrong."""
+    failures = []
+    for name, midis, expected in BENCHMARK_CHORDS:
+        kept, _ = tab_notes(_mknotes([(0, m, 1.5) for m in midis]))
+        got = {n["midi"]: (n["string"], n["fret"], n["finger"])
+               for n in kept}
+        tab_ok = ({m: v[:2] for m, v in got.items()} ==
+                  {m: v[:2] for m, v in expected.items()})
+        fing_ok = all(v[2] is None or (m in got and got[m][2] == v[2])
+                      for m, v in expected.items())
+        fingers = "".join(str(got[m][2]) for m in sorted(
+            got, key=lambda m: got[m][0])) if tab_ok else "-"
+        status = "ok" if tab_ok and fing_ok else "FAIL"
+        print(f"  [{status}] {name:<24} got {_tab_string(got):<7} "
+              f"fingers {fingers}")
+        if status == "FAIL":
+            failures.append(name)
+            print(f"         expected {expected}")
+            print(f"         got      {got}")
+    print()
+    if failures:
+        raise SystemExit(
+            f"benchmark: {len(failures)}/{len(BENCHMARK_CHORDS)} chords "
+            f"failed: {failures}")
+    print(f"benchmark: all {len(BENCHMARK_CHORDS)} chords match their "
+          f"canonical grips")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -647,10 +738,15 @@ def main():
                         help="Hand size preset (default: M)")
     parser.add_argument("--selftest", action="store_true",
                         help="Run golden-pattern checks and exit")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="Check well-known chord grips and exit")
     args = parser.parse_args()
 
     if args.selftest:
         selftest()
+        return
+    if args.benchmark:
+        benchmark()
         return
     if not args.midi_file:
         parser.error("midi_file is required unless --selftest is given")

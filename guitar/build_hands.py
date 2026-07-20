@@ -7,12 +7,14 @@ collection containing two armatures:
     f4 (pinky), each ``f<n>_prox -> f<n>_mid -> f<n>_dist`` pointing +y in
     armature space with roll 0 - the same convention as the piano rig, so
     pose-space x-rotation is curl and z-rotation is sideways reach. The
-    armature object is rotated 90 degrees about Z (HAND_ROT_Z) so bone +y
-    runs across the strings from the treble side: knuckles hover over the
-    treble edge of the neck (index toward the nut, pinky toward the
-    bridge, matching the engine's finger-per-fret hand positions) and the
-    fingertips reach down onto the strings. A static thumb box lies along
-    the treble side of the neck.
+    armature object is rotated 90 degrees about Z (HAND_ROT_Z) and then
+    tilted WRAP_TILT about the neck axis, giving a hand *wrapped around
+    the neck*: the palm hangs beside the treble edge below string level,
+    the knuckle line rides just above the treble edge (index toward the
+    nut, pinky toward the bridge, matching the engine's finger-per-fret
+    hand positions), the fingers arch up and over the strings, and a
+    static thumb box reaches under the neck to press its back - opposite
+    the fingers, like a real fretting grip.
   - ``PickHand``: a stylized fist - a single wrist bone carrying rigid
     palm/finger/thumb boxes and a flat pick whose tip sits at
     PICK_TIP_LOCAL in armature space. The animator drives only the object
@@ -35,6 +37,7 @@ import math
 
 import bpy
 import bmesh
+import mathutils
 
 try:
     from . import fret_layout
@@ -49,10 +52,29 @@ except ImportError:  # loaded as a loose script via importlib
 # strings (world -X) and local +x points up the neck (world +Y).
 HAND_ROT_Z = math.pi / 2.0
 
+# The fret hand is additionally tilted about the neck axis so it wraps
+# the neck from the treble side: at 0 the palm hovers flat above the
+# fretboard (lap-steel style); at WRAP_TILT the palm hangs beside the
+# neck and the finger rest direction points up-and-over the strings.
+WRAP_TILT = 0.6
+
 
 def hand_world_offset(v):
     """Armature-local offset -> world offset under the HAND_ROT_Z pose."""
     return (-v[1], v[0], v[2])
+
+
+def fret_world_offset(v):
+    """Armature-local offset -> world offset for the FretHand's pose
+    (HAND_ROT_Z, then WRAP_TILT about the world neck axis)."""
+    ct, st = math.cos(WRAP_TILT), math.sin(WRAP_TILT)
+    return (v[2] * st - v[1] * ct, v[0], v[1] * st + v[2] * ct)
+
+
+def _fret_local_offset(w):
+    """Inverse of fret_world_offset: world offset -> armature-local."""
+    ct, st = math.cos(WRAP_TILT), math.sin(WRAP_TILT)
+    return (w[1], -(w[0] * ct - w[2] * st), w[0] * st + w[2] * ct)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +91,7 @@ FRET_FINGERS = {
     4: {"knuckle": (-0.042, 0.046, 0.0), "lengths": (0.035, 0.024, 0.019)},
 }
 
-FINGER_BOX_W = 0.014
+FINGER_BOX_W = 0.012
 FINGER_BOX_H = 0.012
 FRET_PALM_SIZE = (0.095, 0.075, 0.020)
 PICK_PALM_SIZE = (0.075, 0.085, 0.026)
@@ -80,7 +102,7 @@ PICK_TIP_LOCAL = (0.0, 0.018, -0.046)
 
 # Where idle hands hover before the animator takes over.
 REST_LOCATION = {
-    "FretHand": (0.075, fret_layout.fret_y(2), 0.085),
+    "FretHand": (0.085, fret_layout.fret_y(2), 0.026),
     "PickHand": (0.045, fret_layout.PLUCK_Y + 0.045, 0.100),
 }
 
@@ -138,19 +160,22 @@ def _bone_box(arm_obj, coll, mat, bone_name, size, location,
     return obj
 
 
-def _new_armature(name, coll):
+def _new_armature(name, coll, tilt=0.0):
     arm_data = bpy.data.armatures.new(name)
     arm_obj = bpy.data.objects.new(name, arm_data)
     arm_obj.location = REST_LOCATION[name]
-    arm_obj.rotation_euler = (0.0, 0.0, HAND_ROT_Z)
+    rot = (mathutils.Matrix.Rotation(tilt, 4, 'Y')
+           @ mathutils.Matrix.Rotation(HAND_ROT_Z, 4, 'Z'))
+    arm_obj.rotation_euler = rot.to_euler()
     coll.objects.link(arm_obj)
     bpy.context.view_layer.objects.active = arm_obj
     return arm_obj
 
 
 def build_fret_hand(coll, mat):
-    """The articulated fretting hand: four IK-driven finger chains."""
-    arm_obj = _new_armature("FretHand", coll)
+    """The articulated fretting hand: four IK-driven finger chains
+    wrapping the neck from the treble side, thumb under the neck."""
+    arm_obj = _new_armature("FretHand", coll, tilt=WRAP_TILT)
     bpy.ops.object.mode_set(mode='EDIT')
     eb = arm_obj.data.edit_bones
 
@@ -183,10 +208,19 @@ def build_fret_hand(coll, mat):
                       (0.0, -length / 2.0, 0.0))
 
     _bone_box(arm_obj, coll, mat, "wrist", FRET_PALM_SIZE, (0.0, -0.013, 0.0))
-    # Static thumb tucked along the treble side of the neck (world +Y is
-    # armature-local +x under HAND_ROT_Z).
-    _bone_box(arm_obj, coll, mat, "wrist", (0.062, 0.020, 0.016),
-              (0.046, -0.016, -0.010))
+
+    # Static thumb reaching under the neck to press its back, opposite
+    # the fingers. Specified as a *world* offset from the wrist (the
+    # animator keeps the wrist near x 0.07-0.09, z ~0.02, so the thumb
+    # tip lands under the neck's centreline around z just below 0) and
+    # converted into the tilted armature's local frame.
+    thumb_center_w = (-0.044, 0.008, -0.020)
+    thumb_dir_w = mathutils.Vector((-0.94, 0.12, -0.32)).normalized()
+    c_local = _fret_local_offset(thumb_center_w)
+    d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w))
+    _bone_box(arm_obj, coll, mat, "wrist", (0.018, 0.070, 0.015),
+              (c_local[0], c_local[1] - 0.030, c_local[2]),
+              rotation=d_local.to_track_quat('Y', 'Z').to_euler())
     return arm_obj
 
 
