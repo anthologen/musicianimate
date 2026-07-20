@@ -1,10 +1,11 @@
 """Generate a short demo MIDI file to exercise guitar/fingering.py.
 
 Sections: an open-position C major scale, a chromatic run up the treble
-strings, small open-chord grips (C, Am, and E fragments), a high phrase
-that forces a position shift up the neck and back, and two deliberate
-stress cases - a five-note cluster (exercises chord simplification) and
-an out-of-range bass note (exercises octave folding).
+strings, small open-chord grips (C, Am, and E fragments), barre chords
+(F major and B minor), a high phrase that forces a position shift up the
+neck and back, and two deliberate stress cases - a five-note cluster
+(exercises chord simplification) and an out-of-range bass note
+(exercises octave folding).
 """
 
 import os
@@ -46,7 +47,16 @@ def build_demo_notes(tpb):
     e_start = am_start + tpb * 2
     for note in (40, 47, 52):           # E chord bottom
         notes.append((e_start, chord_dur, note, 100))
-    chords_end = e_start + tpb * 2
+
+    # Barre chords: F major (E-shape barre, fret 1) and B minor (A-shape
+    # barre, fret 2).
+    f_start = e_start + tpb * 2
+    for note in (41, 48, 53, 57, 60, 65):
+        notes.append((f_start, chord_dur, note, 100))
+    bm_start = f_start + tpb * 2
+    for note in (47, 54, 59, 62, 66):
+        notes.append((bm_start, chord_dur, note, 95))
+    chords_end = bm_start + tpb * 2
 
     # High phrase up the neck and back down to open position.
     phrase = [64, 67, 69, 71, 72, 71, 69, 67, 64, 60, 55]

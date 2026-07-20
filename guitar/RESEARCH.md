@@ -71,10 +71,17 @@ with explicit costs is interpretable and tunable per style, so DP wins here.
 The engine mirrors `piano/fingering.py`'s beam-searched Viterbi:
 
 - **States**: tuples of `(string, fret, finger)` per sounding note.
-  Feasibility pruning: distinct strings; ≤ 4 fretted notes (one finger per
-  note — the no-barre grip model); fretted extent along the neck within a
-  *metric* reach limit (metres, not frets, so reach naturally loosens up
-  the neck where frets shrink); fingers strictly increasing up the frets.
+  Feasibility pruning: distinct strings; fretted extent along the neck
+  within a *metric* reach limit (metres, not frets, so reach naturally
+  loosens up the neck where frets shrink); and one of two grip models:
+  one-finger-per-note (≤ 4 fretted notes, fingers strictly increasing up
+  the frets) or an **index barre** — finger 1 flattens across every
+  fretted note at the grip's lowest fret (≥ 2 of them), fingers 2–4 take
+  up to three higher-fret notes, and no open string may ring on or above
+  the bass-most barred string (the flattened index would mute it). Barre
+  grips carry extra static cost (base + per-string span) so they only win
+  where open grips can't cover the voicing (e.g. F major 133211, Bm
+  x24432 — both produce their textbook fingerings).
 - **Hand position** (Hori's form model): `mean(fret − (finger − 1))` over
   fretted notes; all-open grips inherit the previous position, making open
   strings free pivots for shifts.
@@ -90,8 +97,8 @@ The engine mirrors `piano/fingering.py`'s beam-searched Viterbi:
 
 ## Out of scope (future work)
 
-- **Barre chords** and 5–6 string strums (needs a one-finger-many-strings
-  form model and richer state space).
+- **Partial/ring-finger barres** (D-shape grips barred with finger 3);
+  only index barres are modelled.
 - Techniques: bends, slides, hammer-ons/pull-offs, vibrato, harmonics.
 - **Right-hand fingerstyle** (p-i-m-a assignment); the engine only emits a
   pick-position curve.

@@ -13,8 +13,11 @@ Driessen 2004; Hori 2021) - see guitar/RESEARCH.md for the survey:
   2. Every feasible (string, fret, finger) assignment of an event's
      sounding notes becomes a search state: distinct strings, at most
      MAX_FRETTED fretted notes, fretted extent within physical reach,
-     and fingers ordered index-to-pinky up the frets - one finger per
-     note, so barre grips are out of scope.
+     and fingers ordered index-to-pinky up the frets. Index-finger barre
+     grips are also generated: finger 1 may flatten across every fretted
+     note at the grip's lowest fret (freeing fingers 2-4 for up to three
+     higher frets), provided no open string rings on or above the
+     bass-most barred string.
   3. A beam-searched Viterbi pass picks the cheapest state sequence.
      Static costs favour open strings, low positions, and compact
      grips; transition costs penalize hand-position shifts (the
@@ -59,7 +62,7 @@ HAND_SIZE_FACTOR = {
     "L": 1.05, "XL": 1.10, "XXL": 1.15,
 }
 
-MAX_FRETTED = 4       # no-barre grips: one finger per fretted note
+MAX_FRETTED = 4       # non-barre grips: one finger per fretted note
 REACH_COMF_M = 0.065  # comfortable index..pinky extent along the neck (size M)
 REACH_MAX_M = 0.095   # practical limit; both scale with the hand-size factor
 START_POSITION = 2.0  # the hand starts hovering near open position
@@ -74,6 +77,8 @@ WEIGHTS = {
     "weak_ring": 0.15,           # per use of finger 3
     "weak_pinky": 0.30,          # per use of finger 4
     "index_not_lowest": 0.20,    # chord whose lowest fret isn't finger 1 or 2
+    "barre": 0.85,               # flattening the index across strings at all
+    "barre_string": 0.12,        # per string the barre spans
     # transition (scaled by _time_factor(dt))
     "shift": 1.0,                # per fret of hand-position movement - the dominant term
     "same_finger": 1.0,          # same finger re-pressed on a different fret
@@ -107,12 +112,11 @@ def sanitize_notes(notes, warnings):
 def simplify_chords(events, warnings):
     """Enforce playability scope on each onset event, in place.
 
-    Merges unison duplicates and trims chords that could never fit the
-    no-barre grip model (more notes than strings, or more necessarily
-    fretted notes than fingers) down to the bass note plus the top three.
-    Trimmed notes are tagged note["dropped"] and removed from the event.
+    Merges unison duplicates and trims chords with more notes than
+    strings down to the bass note plus the top three. Trimmed notes are
+    tagged note["dropped"] and removed from the event. (Chords that turn
+    out unplayable even with a barre are thinned later, at assign time.)
     """
-    open_pitches = set(fret_layout.TUNING)
     for ev in events:
         seen = {}
         for n in ev["notes"]:
@@ -124,8 +128,7 @@ def simplify_chords(events, warnings):
             else:
                 seen[n["midi"]] = n
         kept = [n for n in ev["notes"] if not n.get("dropped")]
-        needs_fret = sum(1 for n in kept if n["midi"] not in open_pitches)
-        if len(kept) > fret_layout.NUM_STRINGS or needs_fret > MAX_FRETTED:
+        if len(kept) > fret_layout.NUM_STRINGS:
             keep_ids = {id(n) for n in [kept[0]] + kept[-3:]}
             for n in kept:
                 if id(n) not in keep_ids:
@@ -143,10 +146,11 @@ def _event_states(sounding, factor):
     """All feasible (string, fret, finger) grips for the sounding notes,
     as tuples aligned with `sounding`.
 
-    Feasibility: distinct strings, at most MAX_FRETTED fretted notes,
-    fretted extent within the scaled physical reach, and strictly
-    increasing fingers up the frets (fret ties give the bass-side note
-    the lower finger) - the no-barre grip model.
+    Feasibility: distinct strings, fretted extent within the scaled
+    physical reach, and either the one-finger-per-note model (at most
+    MAX_FRETTED notes, strictly increasing fingers up the frets, fret
+    ties giving the bass-side note the lower finger) or an index barre
+    (see _barre_states).
     """
     reach = REACH_MAX_M * factor
     cand = [fret_layout.candidate_positions(n["midi"]) for n in sounding]
@@ -156,22 +160,52 @@ def _event_states(sounding, factor):
         if len(set(strings)) != len(strings):
             continue
         fretted = [(f, s, idx) for idx, (s, f) in enumerate(combo) if f > 0]
-        if len(fretted) > MAX_FRETTED:
-            continue
-        if fretted:
-            frets = [f for f, _, _ in fretted]
-            if fret_layout.press_y(min(frets)) - fret_layout.press_y(max(frets)) > reach:
-                continue
         if not fretted:
             states.append(tuple((s, f, 0) for s, f in combo))
             continue
+        frets = [f for f, _, _ in fretted]
+        if fret_layout.press_y(min(frets)) - fret_layout.press_y(max(frets)) > reach:
+            continue
         fretted.sort()
-        for fingers in itertools.combinations((1, 2, 3, 4), len(fretted)):
-            asg = [0] * len(combo)
-            for (f, s, idx), fg in zip(fretted, fingers):
-                asg[idx] = fg
-            states.append(tuple((s, f, fg)
-                                for (s, f), fg in zip(combo, asg)))
+        if len(fretted) <= MAX_FRETTED:
+            for fingers in itertools.combinations((1, 2, 3, 4), len(fretted)):
+                asg = [0] * len(combo)
+                for (f, s, idx), fg in zip(fretted, fingers):
+                    asg[idx] = fg
+                states.append(tuple((s, f, fg)
+                                    for (s, f), fg in zip(combo, asg)))
+        states.extend(_barre_states(combo, fretted))
+    return states
+
+
+def _barre_states(combo, fretted):
+    """Index-barre grips for one position combo: finger 1 flattens across
+    every fretted note at the lowest fret, fingers 2-4 take up to three
+    higher-fret notes (increasing up the frets). Physically the index
+    lies across the neck from its bass-most string to the treble edge, so
+    no open string may sound on or above that string.
+
+    `fretted` is (fret, string, combo-index) triples sorted ascending.
+    """
+    f_barre = fretted[0][0]
+    barred = [x for x in fretted if x[0] == f_barre]
+    if len(barred) < 2:
+        return []
+    rest = fretted[len(barred):]
+    if len(rest) > 3:
+        return []
+    s_lowest = min(s for _, s, _ in barred)
+    for s, f in combo:
+        if s >= s_lowest and f < f_barre:  # open or lower fret under the bar
+            return []
+    states = []
+    for fingers in itertools.combinations((2, 3, 4), len(rest)):
+        asg = [0] * len(combo)
+        for _, _, idx in barred:
+            asg[idx] = 1
+        for (f, s, idx), fg in zip(rest, fingers):
+            asg[idx] = fg
+        states.append(tuple((s, f, fg) for (s, f), fg in zip(combo, asg)))
     return states
 
 
@@ -188,14 +222,25 @@ def _state_cost(state, factor):
     over = extent - REACH_COMF_M * factor
     if over > 0:
         cost += WEIGHTS["span_comf"] * over
-    for (f1, _, g1), (f2, _, g2) in zip(fretted, fretted[1:]):
+
+    # A barre collapses to a single finger-1 entry for the per-finger
+    # ordering and weakness checks below.
+    barred = [x for x in fretted if x[2] == 1]
+    if len(barred) >= 2:
+        strings = [s for _, s, _ in barred]
+        cost += (WEIGHTS["barre"]
+                 + WEIGHTS["barre_string"] * (max(strings) - min(strings) + 1))
+        entries = sorted([barred[0]] + [x for x in fretted if x[2] != 1])
+    else:
+        entries = fretted
+    for (f1, _, g1), (f2, _, g2) in zip(entries, entries[1:]):
         cost += WEIGHTS["finger_fret_mismatch"] * abs((g2 - g1) - (f2 - f1))
-    for _, _, g in fretted:
+    for _, _, g in entries:
         if g == 3:
             cost += WEIGHTS["weak_ring"]
         elif g == 4:
             cost += WEIGHTS["weak_pinky"]
-    if len(fretted) >= 2 and fretted[0][2] not in (1, 2):
+    if len(entries) >= 2 and entries[0][2] not in (1, 2):
         cost += WEIGHTS["index_not_lowest"]
     return cost
 
@@ -217,7 +262,7 @@ def _transition_cost(prev_sounding, prev_state, sounding, state, new_ids,
     prev_by_id = {id(n): a for n, a in zip(prev_sounding, prev_state)}
 
     cost = 0.0
-    cur_fretted = {}
+    cur_fingers = {}  # finger -> bass-most (string, fret) among new notes
     for note, (s, f, fg) in zip(sounding, state):
         prev = prev_by_id.get(id(note))
         if prev is not None and id(note) not in new_ids:
@@ -226,16 +271,22 @@ def _transition_cost(prev_sounding, prev_state, sounding, state, new_ids,
             if f > 0 and prev[2] != fg:
                 cost += WEIGHTS["substitution"]
         elif f > 0:
-            cur_fretted[fg] = (s, f)
+            if fg not in cur_fingers or s < cur_fingers[fg][0]:
+                cur_fingers[fg] = (s, f)
 
     pos = _hand_pos(state, ppos)
     cost += WEIGHTS["shift"] * abs(pos - ppos) * tf
 
     # Same finger re-pressed on a new note: fret hops hurt, string hops
-    # cost a little.
+    # cost a little. Barres collapse to their bass-most press so a barred
+    # transition is charged once, not per string.
+    prev_fingers = {}
     for s, f, fg in prev_state:
-        if f > 0 and fg in cur_fretted:
-            ns, nf = cur_fretted[fg]
+        if f > 0 and (fg not in prev_fingers or s < prev_fingers[fg][0]):
+            prev_fingers[fg] = (s, f)
+    for fg, (ns, nf) in cur_fingers.items():
+        if fg in prev_fingers:
+            s, f = prev_fingers[fg]
             if (ns, nf) != (s, f):
                 if nf != f:
                     cost += WEIGHTS["same_finger"] * tf
@@ -331,9 +382,11 @@ def assign_positions(events, hand_size="M", warnings=None):
     key = min(beams[-1], key=lambda k: beams[-1][k][0])
     for i in range(len(events) - 1, -1, -1):
         onset_ids = {id(n) for n in events[i]["notes"]}
+        n_index = sum(1 for _, f, fg in key[0] if f > 0 and fg == 1)
         for note, (s, f, fg) in zip(soundings[i], key[0]):
             if id(note) in onset_ids:
                 note["string"], note["fret"], note["finger"] = s, f, fg
+                note["barre"] = f > 0 and fg == 1 and n_index >= 2
         key = beams[i][key][1]
 
 
@@ -432,6 +485,7 @@ def compute_fingering(midi_path, hand_size="M"):
             "fret": n["fret"],
             "finger": n["finger"],
             "is_open": n["fret"] == 0,
+            "barre": n.get("barre", False),
             "x": round(x, 5),
             "y": round(y, 5),
             "z": round(z, 5),
@@ -507,6 +561,29 @@ def selftest():
           str(by))
     check("finger order matches frets",
           by[55][2] == 0 and 0 < by[52][2] < by[48][2], str(by))
+    check("no barre in an open grip", not any(n.get("barre") for n in kept))
+
+    print("F major barre chord:")
+    kept, _ = run([(0, m, 1.5) for m in (41, 48, 53, 57, 60, 65)])
+    by = {n["midi"]: (n["string"], n["fret"], n["finger"]) for n in kept}
+    check("classic E-shape grip at fret 1",
+          by == {41: (0, 1, 1), 48: (1, 3, 3), 53: (2, 3, 4),
+                 57: (3, 2, 2), 60: (4, 1, 1), 65: (5, 1, 1)},
+          str(by))
+    check("barre flags on the fret-1 notes",
+          {n["midi"] for n in kept if n.get("barre")} == {41, 60, 65},
+          str({n["midi"]: n.get("barre") for n in kept}))
+
+    print("B minor barre chord:")
+    kept, _ = run([(0, m, 1.5) for m in (47, 54, 59, 62, 66)])
+    by = {n["midi"]: (n["string"], n["fret"], n["finger"]) for n in kept}
+    check("A-shape grip at fret 2",
+          by == {47: (1, 2, 1), 54: (2, 4, 3), 59: (3, 4, 4),
+                 62: (4, 3, 2), 66: (5, 2, 1)},
+          str(by))
+    check("barre spans outer strings",
+          {n["midi"] for n in kept if n.get("barre")} == {47, 66},
+          str({n["midi"]: n.get("barre") for n in kept}))
 
     print("Chromatic run G3..E4 in eighths:")
     kept, _ = run([(i, 55 + i) for i in range(10)], dur=0.11, step=0.125)

@@ -10,7 +10,10 @@ built by guitar/build_hands.py:
     bridge), gliding between events with the piano animator's smoothing
     so position shifts read as one sweep. Finger bones are driven by the
     piano's closed-form two-link IK; open strings need no press, so the
-    fret hand simply keeps gliding through them.
+    fret hand simply keeps gliding through them. Barre grips collapse
+    their barred notes into one index press aimed at the bass-most
+    string with a nearly straight finger, and the wrist drops to
+    BARRE_HOVER_Z so the flattened index lies across the strings.
   - The PickHand object location sweeps the pick tip across the strings:
     each onset gets a windup / dip / cross / lift stroke through the
     struck string's pluck point. Chords strum bass-to-treble across the
@@ -55,12 +58,15 @@ except ImportError:  # loaded as a loose script via importlib
 
 # --- fret hand -------------------------------------------------------------
 FRET_HOVER_Z = 0.085   # wrist hover height above the guitar's face
+BARRE_HOVER_Z = 0.055  # lower wrist while barring, so the index lies flat
 HOVER_LIFT = 0.012     # fingertip height above the string while not pressing
 ARRIVE_LEAD = 0.15     # seconds the wrist arrives before a press
 MIN_TRAVEL = 0.12      # seconds of glide the wrist gets between events
 REACH_FRAC = 0.50      # fraction of finger length the knuckle sits back
 DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
+DIST_FLEX_BARRE = 0.06         # flattened index while barring
+DIST_FLEX_BARRE_HOVER = 0.12
 
 # --- pick hand -------------------------------------------------------------
 PICK_HOVER = 0.012     # pick tip above the string plane between strokes
@@ -71,16 +77,35 @@ STRUM_TIME = 0.05      # seconds a chord strum spans around the onset
 ALT_PICK_GAP = 0.25    # alternate stroke direction under this note gap
 
 
+def _barre_press_notes(event):
+    """The event's fretted notes with barred groups collapsed to their
+    bass-most note (the index fingertip target); returns (note, is_barre)
+    pairs. A flattened index presses every barred string on the way to
+    the bass-most one, so only that one needs an IK target."""
+    barred = [n for n in event["notes"] if n["fret"] > 0 and n.get("barre")]
+    out = [(n, False) for n in event["notes"]
+           if n["fret"] > 0 and not n.get("barre")]
+    if len(barred) >= 2:
+        rep = dict(min(barred, key=lambda n: n["x"]))
+        rep["end"] = max(n["end"] for n in barred)
+        rep["velocity"] = max(n["velocity"] for n in barred)
+        out.append((rep, True))
+    else:  # a lone flagged note is just a normal press
+        out.extend((n, False) for n in barred)
+    return out
+
+
 def _fret_event_root_target(event):
     """Wrist location placing the event's pressing knuckles over their
     frets: knuckles sit REACH_FRAC of the finger length toward the treble
     side (+x) of the fingertip target, and directly over its fret in y.
     Uses the midrange like the piano animator so stretched grips split
-    the residual between their outer fingers."""
+    the residual between their outer fingers. Barre events pull the
+    wrist down so the flattened index lies across the strings."""
     xs, ys = [], []
-    for n in event["notes"]:
-        if n["fret"] == 0:
-            continue
+    has_barre = False
+    for n, is_barre in _barre_press_notes(event):
+        has_barre = has_barre or is_barre
         spec = FRET_FINGERS[n["finger"]]
         kx, ky, _kz = spec["knuckle"]
         reach = REACH_FRAC * sum(spec["lengths"])
@@ -88,7 +113,7 @@ def _fret_event_root_target(event):
         xs.append(n["x"] + reach + ky)
         ys.append(n["y"] - kx)
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0,
-            FRET_HOVER_Z)
+            BARRE_HOVER_Z if has_barre else FRET_HOVER_Z)
 
 
 def animate_fret_hand(arm_obj, notes, fps, frame_start,
@@ -136,9 +161,8 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     # Fingers: per finger so release tails clamp against the next press.
     per_finger = {}
     for ev, target in zip(events, targets):
-        for n in ev["notes"]:
-            if n["fret"] > 0:
-                per_finger.setdefault(n["finger"], []).append((n, target))
+        for n, is_barre in _barre_press_notes(ev):
+            per_finger.setdefault(n["finger"], []).append((n, target, is_barre))
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
@@ -150,17 +174,20 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         spec = FRET_FINGERS[f]
         kx, ky, kz = spec["knuckle"]
         prev_off = None
-        for i, (n, target) in enumerate(items):
+        for i, (n, target, is_barre) in enumerate(items):
             # knuckle_world = wrist + (-ky, kx, kz); IK frame: local +y is
             # world -X (across the strings), local +x is world +Y.
             knuckle = (target[0] - ky, target[1] + kx, target[2] + kz)
             dy = knuckle[0] - n["x"]
             dx = n["y"] - knuckle[1]
 
+            flex_press = DIST_FLEX_BARRE if is_barre else DIST_FLEX_PRESS
+            flex_hover = (DIST_FLEX_BARRE_HOVER if is_barre
+                          else DIST_FLEX_HOVER)
             pressed = _finger_ik(dx, dy, knuckle[2] - n["z"],
-                                 spec["lengths"], DIST_FLEX_PRESS)
+                                 spec["lengths"], flex_press)
             hover = _finger_ik(dx, dy, knuckle[2] - (n["z"] + HOVER_LIFT),
-                               spec["lengths"], DIST_FLEX_HOVER)
+                               spec["lengths"], flex_hover)
 
             on_frame = to_frame(n["start"])
             off_frame = max(on_frame, to_frame(n["end"]))
@@ -170,11 +197,11 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             hover_frame = min(hover_frame, on_frame)
 
             _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                         DIST_FLEX_HOVER, hover_frame)
+                         flex_hover, hover_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                         DIST_FLEX_PRESS, on_frame)
+                         flex_press, on_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                         DIST_FLEX_PRESS, off_frame)
+                         flex_press, off_frame)
 
             release_frame = off_frame + release_frames
             if i + 1 < len(items):
@@ -184,7 +211,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 release_frame = min(release_frame, nxt_hover - 0.5)
             if release_frame > off_frame + 0.25:
                 _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                             DIST_FLEX_HOVER, release_frame)
+                             flex_hover, release_frame)
             prev_off = off_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
