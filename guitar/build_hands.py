@@ -91,7 +91,7 @@ FRET_FINGERS = {
     4: {"knuckle": (-0.042, 0.046, 0.0), "lengths": (0.035, 0.024, 0.019)},
 }
 
-FINGER_BOX_W = 0.012
+FINGER_BOX_W = 0.011
 FINGER_BOX_H = 0.012
 FRET_PALM_SIZE = (0.095, 0.075, 0.020)
 PICK_PALM_SIZE = (0.075, 0.085, 0.026)

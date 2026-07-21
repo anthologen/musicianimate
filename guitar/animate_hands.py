@@ -39,11 +39,12 @@ import math
 import os
 
 import bpy
+import mathutils
 
 try:
     from . import fret_layout
-    from .build_hands import (FRET_FINGERS, PICK_TIP_LOCAL, WRAP_TILT,
-                              fret_world_offset, hand_world_offset)
+    from .build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_TIP_LOCAL,
+                              WRAP_TILT, hand_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger,
@@ -54,8 +55,8 @@ except ImportError:  # loaded as a loose script via importlib
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
     import fret_layout
-    from build_hands import (FRET_FINGERS, PICK_TIP_LOCAL, WRAP_TILT,
-                             fret_world_offset, hand_world_offset)
+    from build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_TIP_LOCAL,
+                             WRAP_TILT, hand_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger,
@@ -73,7 +74,29 @@ DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
 DIST_FLEX_BARRE = 0.06         # flattened index while barring
 DIST_FLEX_BARRE_HOVER = 0.12
-PRESS_STAGGER = 0.008  # fret-slot y spread between fingers sharing a fret
+PRESS_STAGGER = 0.013  # fret-slot y spread between fingers sharing a fret
+
+# Per-event wrist rotation freedom, chosen by a grid search that
+# penalizes predicted finger-finger collisions (forward kinematics of
+# the pressing fingers). Yaw turns the hand in the fretboard plane and
+# is locked to 0 while barring (the flattened index must stay parallel
+# to the fret wire); roll spins about the reach axis - safe during
+# barres - lifting one side of the knuckle line so a far-reaching
+# finger arches OVER its neighbour instead of slicing through it.
+WRIST_YAW_MAX = 0.56
+WRIST_YAW_STEP = 0.08
+WRIST_YAW_REG = 0.5    # cost per rad^2 of yaw - prefer a neutral wrist
+WRIST_ROLL_MAX = 0.42
+WRIST_ROLL_STEP = 0.07
+WRIST_ROLL_REG = 0.3
+WRIST_COHERE = 2.0     # per rad^2 of pose change from the previous event,
+                       # fading out over 1.5 s - stops the wrist flipping
+                       # between opposite extremes on back-to-back chords
+                       # (the interpolating fingers would cross mid-swing)
+TOUCH_CLEAR = 0.012    # axis distance where finger boxes sit flush
+COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
+RETARGET_DIST = 0.006  # lateral move beyond which a finger curls up
+                       # (relax pose) while travelling to its next spot
 
 # --- pick hand -------------------------------------------------------------
 PICK_HOVER = 0.012     # pick tip above the string plane between strokes
@@ -116,36 +139,151 @@ def _barre_press_notes(event):
         group.sort(key=lambda n: n["finger"])
         for i, n in enumerate(group):
             rep = dict(n)
-            rep["y"] = n["y"] + PRESS_STAGGER * ((len(group) - 1) / 2.0 - i)
+            wire = fret_layout.fret_y(n["fret"])
+            width = fret_layout.fret_width(n["fret"])
+            rep["y"] = max(wire + 0.10 * width,
+                           min(wire + 0.85 * width,
+                               n["y"] + PRESS_STAGGER
+                               * ((len(group) - 1) / 2.0 - i)))
             out.append((rep, False))
     return out
 
 
-def _fret_event_root_target(event):
-    """Wrist location placing the event's pressing knuckles on the
-    knuckle line: each knuckle sits REACH_FRAC of its finger length back
-    along the (tilted) rest direction from the fingertip target, over
-    its fret in y and at KNUCKLE_Z - which puts the wrist itself beside
-    the neck, below string level, in the wrap grip. Uses the midrange
-    like the piano animator so stretched grips split the residual
-    between their outer fingers. Barre events lower the knuckle line so
-    the flattened index lies across the strings."""
-    ct, st = math.cos(WRAP_TILT), math.sin(WRAP_TILT)
-    press = _barre_press_notes(event)
-    has_barre = any(b for _, b in press)
-    knuckle_z = KNUCKLE_Z_BARRE if has_barre else KNUCKLE_Z
+def _fret_rotation(yaw, roll):
+    """The FretHand's world rotation: base wrap pose, then forearm roll
+    about the reach axis, then yaw in the fretboard plane."""
+    return (mathutils.Matrix.Rotation(yaw, 3, 'Z')
+            @ mathutils.Matrix.Rotation(roll, 3, 'X')
+            @ mathutils.Matrix.Rotation(WRAP_TILT, 3, 'Y')
+            @ mathutils.Matrix.Rotation(HAND_ROT_Z, 3, 'Z'))
+
+
+def _solve_wrist(press, rot, knuckle_z):
+    """Wrist location placing each pressing knuckle REACH_FRAC of its
+    finger length back along the rotated rest direction from its
+    fingertip target, at the knuckle_z line. Midrange like the piano
+    animator, so stretched grips split the residual between their outer
+    fingers."""
+    rest_dir = rot @ mathutils.Vector((0.0, 1.0, 0.0))
     xs, ys, zs = [], [], []
     for n, _is_barre in press:
         spec = FRET_FINGERS[n["finger"]]
-        kx, ky, _kz = spec["knuckle"]
         reach = REACH_FRAC * sum(spec["lengths"])
-        # knuckle_world = wrist + fret_world_offset((kx, ky, 0))
-        #               = wrist + (-ky*ct, kx, ky*st)
-        xs.append(n["x"] + (reach + ky) * ct)
-        ys.append(n["y"] - kx)
-        zs.append(knuckle_z - ky * st)
+        ko = rot @ mathutils.Vector(spec["knuckle"])
+        xs.append(n["x"] - reach * rest_dir.x - ko.x)
+        ys.append(n["y"] - reach * rest_dir.y - ko.y)
+        zs.append(knuckle_z - ko.z)
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0,
             (min(zs) + max(zs)) / 2.0)
+
+
+def _seg_dist(p1, q1, p2, q2):
+    """Minimum distance between segments p1-q1 and p2-q2 (Ericson)."""
+    d1, d2 = q1 - p1, q2 - p2
+    r = p1 - p2
+    a, e, f = d1.length_squared, d2.length_squared, d2.dot(r)
+    if a < 1e-12 and e < 1e-12:
+        return r.length
+    if a < 1e-12:
+        s, t = 0.0, max(0.0, min(1.0, f / e))
+    else:
+        c = d1.dot(r)
+        if e < 1e-12:
+            t, s = 0.0, max(0.0, min(1.0, -c / a))
+        else:
+            b = d1.dot(d2)
+            denom = a * e - b * b
+            s = max(0.0, min(1.0, (b * f - c * e) / denom)) if denom > 1e-12 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, max(0.0, min(1.0, -c / a))
+            elif t > 1.0:
+                t, s = 1.0, max(0.0, min(1.0, (b - c) / a))
+    return ((p1 + d1 * s) - (p2 + d2 * t)).length
+
+
+def _finger_fk(wrist, rot, spec, tip, flex):
+    """Predicted world joint points [knuckle, prox, mid, tip] of a
+    finger posed by the IK at this wrist pose - the same geometry
+    _pose_finger will bake, reconstructed for collision checks."""
+    ko = rot @ mathutils.Vector(spec["knuckle"])
+    knuckle = mathutils.Vector(wrist) + ko
+    local = rot.transposed() @ (mathutils.Vector(tip) - knuckle)
+    yaw, prox, mid = _finger_ik(local.x, local.y, -local.z,
+                                spec["lengths"], flex)
+    sy, cy = math.sin(yaw), math.cos(yaw)
+    pts = [knuckle]
+    p = mathutils.Vector(spec["knuckle"])
+    pitch = prox
+    for length, dflex in zip(spec["lengths"], (0.0, mid, flex)):
+        pitch += dflex
+        p = p + length * mathutils.Vector(
+            (sy * math.cos(pitch), cy * math.cos(pitch), -math.sin(pitch)))
+        pts.append(mathutils.Vector(wrist) + rot @ p)
+    return pts
+
+
+def _pose_cost(press, wrist, rot):
+    """IK strain plus predicted finger-collision penalty of one pose."""
+    cost = 0.0
+    inv = rot.transposed()
+    chains = []
+    for n, is_barre in press:
+        spec = FRET_FINGERS[n["finger"]]
+        ko = rot @ mathutils.Vector(spec["knuckle"])
+        delta = mathutils.Vector((n["x"] - (wrist[0] + ko.x),
+                                  n["y"] - (wrist[1] + ko.y),
+                                  n["z"] - (wrist[2] + ko.z)))
+        local = inv @ delta
+        cost += math.atan2(local.x, max(local.y, 0.012)) ** 2
+        chains.append(_finger_fk(
+            wrist, rot, spec, (n["x"], n["y"], n["z"]),
+            DIST_FLEX_BARRE if is_barre else DIST_FLEX_PRESS))
+    for i in range(len(chains)):
+        for j in range(i + 1, len(chains)):
+            dmin = min(_seg_dist(chains[i][k], chains[i][k + 1],
+                                 chains[j][m], chains[j][m + 1])
+                       for k in range(3) for m in range(3))
+            if dmin < TOUCH_CLEAR:
+                cost += COLLIDE_W * (TOUCH_CLEAR - dmin) ** 2
+    return cost
+
+
+def _fret_event_pose(event, prev_pose=None, dt=None):
+    """(wrist location, yaw, roll) for one fretted event, from a grid
+    search over the wrist's rotation freedom that trades IK strain, a
+    neutral wrist, and coherence with the previous event's pose against
+    predicted finger-finger collisions. Barre events lock yaw (the bar
+    must stay parallel to the fret wire) but keep roll, which spins
+    about the bar's own axis."""
+    press = _barre_press_notes(event)
+    has_barre = any(b for _, b in press)
+    knuckle_z = KNUCKLE_Z_BARRE if has_barre else KNUCKLE_Z
+    if not press:
+        return _solve_wrist(press, _fret_rotation(0, 0), knuckle_z), 0.0, 0.0
+
+    cohere = 0.0
+    if prev_pose is not None and dt is not None:
+        cohere = WRIST_COHERE * max(0.0, 1.0 - dt / 1.5)
+    ysteps = 0 if has_barre else int(round(WRIST_YAW_MAX / WRIST_YAW_STEP))
+    rsteps = (int(round(WRIST_ROLL_MAX / WRIST_ROLL_STEP))
+              if len(press) >= 2 else 0)
+    best = None
+    for ri in range(-rsteps, rsteps + 1):
+        roll = ri * WRIST_ROLL_STEP
+        for yi in range(-ysteps, ysteps + 1):
+            yaw = yi * WRIST_YAW_STEP
+            rot = _fret_rotation(yaw, roll)
+            wrist = _solve_wrist(press, rot, knuckle_z)
+            cost = (WRIST_YAW_REG * yaw * yaw
+                    + WRIST_ROLL_REG * roll * roll
+                    + _pose_cost(press, wrist, rot))
+            if cohere:
+                cost += cohere * ((yaw - prev_pose[0]) ** 2
+                                  + (roll - prev_pose[1]) ** 2)
+            if best is None or cost < best[0]:
+                best = (cost, wrist, yaw, roll)
+    return best[1], best[2], best[3]
 
 
 def animate_fret_hand(arm_obj, notes, fps, frame_start,
@@ -165,72 +303,78 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     if not events:
         return frame_start
 
-    targets = _smooth_targets(events, [_fret_event_root_target(ev)
-                                       for ev in events])
+    poses = []
+    prev_pose, prev_t = None, None
+    for ev in events:
+        pose = _fret_event_pose(
+            ev, prev_pose, None if prev_t is None else ev["t"] - prev_t)
+        poses.append(pose)
+        prev_pose, prev_t = (pose[1], pose[2]), ev["t"]
+    targets = _smooth_targets(events, [p[0] for p in poses])
+    # Smooth the wrist rotation with the same weights/segments as the
+    # location so they always travel together.
+    rots = [(r[0], r[1]) for r in _smooth_targets(
+        events, [(yaw, roll, 0.0) for _, yaw, roll in poses])]
 
-    def key_root(t, target):
+    def key_root(t, target, rot):
         arm_obj.location = target
-        arm_obj.keyframe_insert(data_path="location", frame=to_frame(t))
+        arm_obj.rotation_euler = _fret_rotation(*rot).to_euler()
+        frame = to_frame(t)
+        arm_obj.keyframe_insert(data_path="location", frame=frame)
+        arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
     prev_t = None
-    for i, (ev, target) in enumerate(zip(events, targets)):
+    for i, (ev, target, rot) in enumerate(zip(events, targets, rots)):
         arrive = ev["t"] - ARRIVE_LEAD
         if prev_t is not None:
             arrive = max(arrive, prev_t + 0.6 * (ev["t"] - prev_t))
         arrive = max(arrive, 0.0)
-        key_root(arrive, target)
+        key_root(arrive, target, rot)
         end = max(n["end"] for n in ev["notes"] if n["fret"] > 0)
         depart = end
         if i + 1 < len(events):
             depart = min(depart, events[i + 1]["t"] - ARRIVE_LEAD - MIN_TRAVEL)
         depart = max(depart, ev["t"])
         if depart > arrive + 0.02:
-            key_root(depart, target)
+            key_root(depart, target, rot)
             prev_t = depart
         else:
             prev_t = arrive
 
     # Fingers: per finger so release tails clamp against the next press.
     per_finger = {}
-    for ev, target in zip(events, targets):
+    for ev, target, rot in zip(events, targets, rots):
         for n, is_barre in _barre_press_notes(ev):
-            per_finger.setdefault(n["finger"], []).append((n, target, is_barre))
+            per_finger.setdefault(n["finger"], []).append(
+                (n, target, rot, is_barre))
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
         return max_attack_frames - vel_t * (max_attack_frames -
                                             min_attack_frames)
 
-    ct, st = math.cos(WRAP_TILT), math.sin(WRAP_TILT)
-
-    def ik_inputs(knuckle, tip_x, tip_y, tip_z):
-        """World displacement knuckle->tip expressed in the tilted IK
-        frame: dx sideways along the neck (local +x = world +Y), dy along
-        the finger rest direction (local +y = (-ct, 0, st)), dv the drop
-        against the tilted palm normal."""
-        dxw = tip_x - knuckle[0]
-        dzw = tip_z - knuckle[2]
-        dx = tip_y - knuckle[1]
-        dy = -dxw * ct + dzw * st
-        dv = -(dxw * st + dzw * ct)
-        return dx, dy, dv
-
     last_frame = frame_start
     for f, items in per_finger.items():
         spec = FRET_FINGERS[f]
-        ko = fret_world_offset(spec["knuckle"])
         prev_off = None
-        for i, (n, target, is_barre) in enumerate(items):
-            knuckle = (target[0] + ko[0], target[1] + ko[1],
-                       target[2] + ko[2])
+        for i, (n, target, rot, is_barre) in enumerate(items):
+            rmat = _fret_rotation(*rot)
+            rinv = rmat.transposed()
+            ko = rmat @ mathutils.Vector(spec["knuckle"])
+            knuckle = (target[0] + ko.x, target[1] + ko.y, target[2] + ko.z)
+
+            def ik_inputs(tip_z):
+                local = rinv @ mathutils.Vector(
+                    (n["x"] - knuckle[0], n["y"] - knuckle[1],
+                     tip_z - knuckle[2]))
+                return local.x, local.y, -local.z
 
             flex_press = DIST_FLEX_BARRE if is_barre else DIST_FLEX_PRESS
             flex_hover = (DIST_FLEX_BARRE_HOVER if is_barre
                           else DIST_FLEX_HOVER)
-            dx, dy, dv = ik_inputs(knuckle, n["x"], n["y"], n["z"])
+            dx, dy, dv = ik_inputs(n["z"])
             pressed = _finger_ik(dx, dy, dv, spec["lengths"], flex_press)
-            dx, dy, dv = ik_inputs(knuckle, n["x"], n["y"],
-                                   n["z"] + HOVER_LIFT)
+            dx, dy, dv = ik_inputs(n["z"] + HOVER_LIFT)
             hover = _finger_ik(dx, dy, dv, spec["lengths"], flex_hover)
 
             on_frame = to_frame(n["start"])
@@ -248,14 +392,27 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                          flex_press, off_frame)
 
             release_frame = off_frame + release_frames
+            nxt_hover = None
+            retarget = False
             if i + 1 < len(items):
                 nxt = items[i + 1][0]
                 nxt_hover = max(frame_start,
                                 to_frame(nxt["start"]) - attack_frames(nxt))
                 release_frame = min(release_frame, nxt_hover - 0.5)
+                retarget = (abs(nxt["x"] - n["x"]) + abs(nxt["y"] - n["y"])
+                            > RETARGET_DIST)
+            if (retarget and release_frame <= off_frame + 0.25
+                    and nxt_hover - off_frame > 1.0):
+                release_frame = (off_frame + nxt_hover) / 2.0
             if release_frame > off_frame + 0.25:
-                _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                             flex_hover, release_frame)
+                if retarget:
+                    # Curl up while repositioning so the travelling
+                    # finger clears pressed neighbours instead of
+                    # sweeping through them at hover height.
+                    _relax_finger(pbones, f, release_frame)
+                else:
+                    _pose_finger(pbones, f, hover[0], hover[1], hover[2],
+                                 flex_hover, release_frame)
             prev_off = off_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
