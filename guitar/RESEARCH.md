@@ -95,6 +95,40 @@ The engine mirrors `piano/fingering.py`'s beam-searched Viterbi:
 - Out-of-range pitches are octave-folded with a warning; chords that can
   never fit the grip model are thinned to bass + top three with a warning.
 
+## Right-hand picking direction (down/up strokes)
+
+The pick's stroke direction follows **metric ("pendulum") picking**, the
+model taught for keeping time: the hand oscillates with the beat, so a
+note is struck whichever way the hand happens to be moving.
+
+- **Down on the beat, up on the off-beat.** Downstrokes land on beats
+  (1, 2, 3, 4); upstrokes land on the "&". Algorithmically, from each
+  onset's fractional beat `b`: `slot = round(b / S)`; **even = down,
+  odd = up**, where `S` is the pendulum subdivision (beats per
+  half-swing). Consecutive on-beat notes (quarters, chords) come out as
+  repeated downstrokes; an even eighth/sixteenth run alternates.
+- **Re-anchoring after a rest.** Because direction is a pure function of
+  beat position, the hand naturally resumes on the correct stroke after
+  a pause — a downbeat after a break is a downstroke even if the last
+  note was also one, matching how players "keep the pendulum going".
+- **Accent override.** A loud note (`velocity ≥ ACCENT_VEL`) following a
+  rest (`gap ≥ GAP_RESET`) is forced to a downstroke for attack/power.
+- **Subdivision `S`** is auto-detected as the median inter-onset gap in
+  beats, snapped to `{1, 1/2, 1/3, 1/4}` (overridable), so eighth-note
+  passages swing at eighths and sixteenth passages at sixteenths.
+- **Velocity dynamics.** Louder notes get a **larger backswing**
+  (windup distance) and a **faster strike** (shorter apex→contact time,
+  so the pick crosses the strings faster).
+
+Beat positions are computed in `guitar/fingering.py` from the MIDI tempo
+map (stored as `note["beat"]` in `fingering.json`); the stroke decision
+and dynamics live in `guitar/animate_hands.py`. Sources: Cracking the
+Code / Troy Grady alternate-picking reference; Tagliarino's pendulum
+picking; Wikipedia "Downpicking".
+
+Out of scope here: economy/sweep picking (two same-direction strokes to
+minimise string crossing) and per-string cross-picking optimisation.
+
 ## Out of scope (future work)
 
 - **Partial/ring-finger barres** (D-shape grips barred with finger 3);

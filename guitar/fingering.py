@@ -45,12 +45,14 @@ import sys
 try:
     from . import fret_layout
     from piano.fingering import load_notes, group_events, _time_factor
+    from piano.piano_midi_animator import parse_midi
 except ImportError:  # running as a loose script, not a package
     _HERE = os.path.dirname(os.path.abspath(__file__))
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
     import fret_layout
     from piano.fingering import load_notes, group_events, _time_factor
+    from piano.piano_midi_animator import parse_midi
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +474,35 @@ def pick_curve(notes, t_end, rate=30.0, smooth_window=0.15):
             for i, v in enumerate(_smoothed_samples(samples, rate, smooth_window))]
 
 
+def _beat_mapper(midi_path):
+    """Return beats_at(seconds) -> fractional beats from the song start,
+    inverting the MIDI tempo map. The right-hand animator uses beat
+    positions to decide down- vs up-strokes (down on the beat, up on the
+    off-beat). Constant tempo collapses to beats = seconds / sec_per_beat.
+    """
+    ticks_per_beat, tempo_map, _ = parse_midi(midi_path)
+    # (seconds, beats) breakpoint at each tempo segment start.
+    pts = []
+    cum_sec, prev_tick, prev_tempo = 0.0, 0, tempo_map[0][1]
+    for tick, tempo in tempo_map:
+        cum_sec += (tick - prev_tick) * (prev_tempo / 1e6) / ticks_per_beat
+        pts.append((cum_sec, tick / ticks_per_beat))
+        prev_tick, prev_tempo = tick, tempo
+    last_spb = prev_tempo / 1e6  # seconds per beat past the final breakpoint
+
+    def beats_at(seconds):
+        prev_s, prev_b = pts[0]
+        for s, b in pts[1:]:
+            if seconds < s:
+                span = s - prev_s
+                frac = (seconds - prev_s) / span if span > 1e-9 else 0.0
+                return prev_b + frac * (b - prev_b)
+            prev_s, prev_b = s, b
+        return prev_b + (seconds - prev_s) / last_spb
+
+    return beats_at
+
+
 def compute_fingering(midi_path, hand_size="M"):
     """Full pipeline: MIDI file -> tablature/fingering timeline dict."""
     raw = load_notes(midi_path)
@@ -479,6 +510,8 @@ def compute_fingering(midi_path, hand_size="M"):
     notes, warnings = tab_notes(raw, hand_size)
     for w in warnings:
         print(f"warning: {w}", file=sys.stderr)
+
+    beats_at = _beat_mapper(midi_path)
 
     t_end = max((n["end"] for n in notes), default=0.0)
     out_notes = []
@@ -488,6 +521,7 @@ def compute_fingering(midi_path, hand_size="M"):
         out_notes.append({
             "start": round(n["start"], 5),
             "end": round(n["end"], 5),
+            "beat": round(beats_at(n["start"]), 4),
             "midi": n["midi"],
             "velocity": n["velocity"],
             "string": n["string"],

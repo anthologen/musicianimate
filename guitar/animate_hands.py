@@ -44,7 +44,7 @@ import mathutils
 try:
     from . import fret_layout
     from .build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_TIP_LOCAL,
-                              WRAP_TILT, hand_world_offset)
+                              WRAP_TILT, pick_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger,
@@ -101,10 +101,22 @@ RETARGET_DIST = 0.006  # lateral move beyond which a finger curls up
 # --- pick hand -------------------------------------------------------------
 PICK_HOVER = 0.012     # pick tip above the string plane between strokes
 PICK_DEPTH = 0.004     # pick tip below the string plane while crossing
-PICK_LEAD_X = 0.012    # windup distance before the first struck string
-PICK_FOLLOW_X = 0.010  # follow-through past the last struck string
+PICK_LEAD_X = 0.012    # base windup distance before the first struck string
+PICK_FOLLOW_X = 0.010  # base follow-through past the last struck string
 STRUM_TIME = 0.05      # seconds a chord strum spans around the onset
-ALT_PICK_GAP = 0.25    # alternate stroke direction under this note gap
+
+# Stroke direction follows metric ("pendulum") picking: down on the beat,
+# up on the off-beat. slot = round(beat / PENDULUM_SUBDIV); even = down,
+# odd = up. This gives alternate down-up for even runs, repeated
+# downstrokes for on-beat notes, and a clean re-anchor after rests. A
+# loud note after a rest is forced to a power downstroke. See RESEARCH.md.
+PENDULUM_SUBDIV = None  # beats per half-swing; None = auto (median gap)
+ACCENT_VEL = 100       # velocity at/above which a post-rest note down-picks
+GAP_RESET = 0.35       # seconds of silence that re-anchor the pendulum
+
+# Velocity dynamics: louder = bigger backswing and a faster strike.
+STRIKE_SLOW = 0.12     # apex->contact time for a soft note (slow strike)
+STRIKE_FAST = 0.045    # apex->contact time for a loud note (fast strike)
 
 
 def _barre_press_notes(event):
@@ -423,10 +435,57 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     return last_frame
 
 
+def _event_beat(ev):
+    """Fractional beat of an event (min note beat), or None if the JSON
+    predates the beat field."""
+    beats = [n["beat"] for n in ev["notes"] if "beat" in n]
+    return min(beats) if beats else None
+
+
+def _pendulum_subdiv(events):
+    """Beats per pendulum half-swing: the median inter-onset gap in beats,
+    snapped to a musical grid. This makes an eighth-note passage swing at
+    eighths (alternating) and a sixteenth passage at sixteenths, while
+    quarter/chordal material lands on even slots (downstrokes)."""
+    if PENDULUM_SUBDIV is not None:
+        return PENDULUM_SUBDIV
+    beats = [b for b in (_event_beat(ev) for ev in events) if b is not None]
+    gaps = sorted(b1 - b0 for b0, b1 in zip(beats, beats[1:]) if b1 - b0 > 1e-4)
+    if not gaps:
+        return 0.5
+    med = gaps[len(gaps) // 2]
+    grid = (1.0, 0.5, 1.0 / 3.0, 0.25)
+    snapped = min(grid, key=lambda g: abs(g - med))
+    return max(0.25, min(1.0, snapped))
+
+
+def _pick_directions(events):
+    """+1 (down = bass->treble) / -1 (up) per event, by metric picking:
+    down on the beat, up on the off-beat, with a loud post-rest note
+    forced to a power downstroke."""
+    subdiv = _pendulum_subdiv(events)
+    dirs = []
+    prev_t = None
+    for ev in events:
+        beat = _event_beat(ev)
+        if beat is None:  # defensive: no metric info -> simple alternate
+            direction = 1 if not dirs else -dirs[-1]
+        else:
+            slot = round(beat / subdiv)
+            direction = 1 if slot % 2 == 0 else -1
+        gap = None if prev_t is None else ev["t"] - prev_t
+        vel = max(n["velocity"] for n in ev["notes"])
+        if gap is not None and gap >= GAP_RESET and vel >= ACCENT_VEL:
+            direction = 1  # accented attack after a rest -> downstroke
+        dirs.append(direction)
+        prev_t = ev["t"]
+    return dirs
+
+
 def animate_pick_hand(arm_obj, notes, fps, frame_start):
     """Keyframe the picking hand's strokes. Returns the last frame."""
     arm_obj.animation_data_clear()
-    tip_off = hand_world_offset(PICK_TIP_LOCAL)
+    tip_off = pick_world_offset(PICK_TIP_LOCAL)
     obj_y = fret_layout.PLUCK_Y - tip_off[1]
     z_hover = fret_layout.STRING_Z + PICK_HOVER - tip_off[2]
     z_pluck = fret_layout.STRING_Z - PICK_DEPTH - tip_off[2]
@@ -440,6 +499,7 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
     if not events:
         return frame_start
 
+    directions = _pick_directions(events)
     min_dt = 0.75 / fps  # keep successive keyframes distinct
     last_t = None
 
@@ -451,30 +511,32 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
         last_t = t
         return t
 
-    prev_dir = -1
     prev_t = None
     last_frame = frame_start
-    for ev in events:
+    for ev, direction in zip(events, directions):
         t = ev["t"]
         gap = t - prev_t if prev_t is not None else None
-        direction = 1
-        if gap is not None and gap < ALT_PICK_GAP and len(ev["notes"]) == 1:
-            direction = -prev_dir
         xs = sorted(n["pluck_x"] for n in ev["notes"])
         first, last = (xs[0], xs[-1]) if direction > 0 else (xs[-1], xs[0])
         chord = len(ev["notes"]) > 1
-        dip_lead = STRUM_TIME if chord else 0.02
+
+        # Louder -> bigger backswing and a faster (shorter) strike.
+        vel_norm = max(0.0, min(1.0, max(n["velocity"]
+                                         for n in ev["notes"]) / 127.0))
+        lead = PICK_LEAD_X * (0.6 + 1.3 * vel_norm)
+        follow = PICK_FOLLOW_X * (0.6 + 0.8 * vel_norm)
+        strike = STRIKE_SLOW - vel_norm * (STRIKE_SLOW - STRIKE_FAST)
         cross_lag = STRUM_TIME if chord else 0.015
 
-        windup = t - (min(0.10, 0.6 * gap) if gap is not None else 0.10)
-        key_after(windup, first - direction * PICK_LEAD_X, z_hover)
-        key_after(t - dip_lead, first - direction * PICK_LEAD_X * 0.5, z_pluck)
-        key_after(t + cross_lag, last + direction * PICK_FOLLOW_X * 0.5,
-                  z_pluck)
+        # Backswing apex, held above the strings, then the strike drops
+        # to the string and crosses; apex->contact time = `strike`.
+        windup = t - strike - (min(0.06, 0.4 * gap) if gap is not None else 0.06)
+        key_after(windup, first - direction * lead, z_hover)
+        key_after(t - 0.5 * strike, first - direction * lead * 0.4, z_pluck)
+        key_after(t + cross_lag, last + direction * follow * 0.5, z_pluck)
         rise_t = key_after(t + cross_lag + 0.06,
-                           last + direction * PICK_FOLLOW_X, z_hover)
+                           last + direction * follow, z_hover)
         last_frame = max(last_frame, frame_start + rise_t * fps)
-        prev_dir = direction
         prev_t = t
 
     for fcurve in _iter_action_fcurves(arm_obj.animation_data

@@ -15,10 +15,14 @@ collection containing two armatures:
     hand positions), the fingers arch up and over the strings, and a
     static thumb box reaches under the neck to press its back - opposite
     the fingers, like a real fretting grip.
-  - ``PickHand``: a stylized fist - a single wrist bone carrying rigid
-    palm/finger/thumb boxes and a flat pick whose tip sits at
-    PICK_TIP_LOCAL in armature space. The animator drives only the object
-    location, sweeping the pick tip across the strings.
+  - ``PickHand``: a stylized loose fist holding a pick, a single wrist
+    bone carrying rigid palm/finger/thumb boxes and a flat pick whose tip
+    sits at PICK_TIP_LOCAL in armature space. It is oriented (PICK_PITCH
+    /PICK_YAW) so the fingers run *parallel to the strings* (along the
+    neck axis) and curl into the palm, the thumb crosses over the index
+    to pinch the pick, and the pick protrudes down toward the strings.
+    The animator drives only the object location, sweeping the pick tip
+    across the strings.
 
 Rigid boxes bone-parented to each bone match the piano hands' blocky
 aesthetic; no skinning.
@@ -64,6 +68,24 @@ def hand_world_offset(v):
     return (-v[1], v[0], v[2])
 
 
+# The pick hand is not laid flat across the strings like a lap-steel; it
+# is a loose fist whose fingers run *along* the neck (parallel to the
+# strings). Built in a canonical local frame (+y = toward the nut along
+# the strings, +z = up/back-of-hand, +x = toward the treble/thumb side),
+# then pitched forward-down over the strings and yawed so the forearm
+# comes in from the treble side.
+PICK_PITCH = 0.55   # forward-down tilt of the whole hand
+PICK_YAW = -0.25    # forearm angle across the strings
+
+PICK_ROT = (mathutils.Matrix.Rotation(PICK_YAW, 3, 'Z')
+            @ mathutils.Matrix.Rotation(-PICK_PITCH, 3, 'X'))
+
+
+def pick_world_offset(v):
+    """Armature-local offset -> world offset under the PickHand pose."""
+    return tuple(PICK_ROT @ mathutils.Vector(v))
+
+
 def fret_world_offset(v):
     """Armature-local offset -> world offset for the FretHand's pose
     (HAND_ROT_Z, then WRAP_TILT about the world neck axis)."""
@@ -96,9 +118,10 @@ FINGER_BOX_H = 0.012
 FRET_PALM_SIZE = (0.095, 0.075, 0.020)
 PICK_PALM_SIZE = (0.075, 0.085, 0.026)
 
-# Pick tip in PickHand armature-local space: under the palm's front edge
-# at the thumb pinch, reaching down toward the strings.
-PICK_TIP_LOCAL = (0.0, 0.018, -0.046)
+# Pick tip in PickHand armature-local space: below the thumb/index pinch,
+# reaching down toward the strings.
+PICK_PINCH = (0.014, 0.044, -0.008)
+PICK_TIP_LOCAL = (0.014, 0.044, -0.047)
 
 # Where idle hands hover before the animator takes over.
 REST_LOCATION = {
@@ -224,14 +247,15 @@ def build_fret_hand(coll, mat):
     return arm_obj
 
 
-def _make_pick_mesh(name):
-    """A flat rounded-triangle pick, tip pointing down (-z), thickness
-    along y; the tip sits 0.026 below the object origin."""
-    verts, faces = [], []
-    outline = [(-0.0095, 0.0), (0.0095, 0.0), (0.0, -0.026)]
-    for dy in (-0.00075, 0.00075):
-        for x, z in outline:
-            verts.append((x, dy, z))
+def _make_pick_mesh(name, length):
+    """A flat rounded-triangle pick, tip pointing down (-z) `length`
+    below the object origin, blade in the y-z plane (thickness along x)
+    so its face points across the strings after the hand's rotation."""
+    verts = []
+    outline = [(-0.010, 0.002), (0.010, 0.002), (0.0, -length)]  # (y, z)
+    for dx in (-0.0008, 0.0008):
+        for y, z in outline:
+            verts.append((dx, y, z))
     faces = [(0, 1, 2), (5, 4, 3), (0, 3, 4, 1), (1, 4, 5, 2), (2, 5, 3, 0)]
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
@@ -239,9 +263,22 @@ def _make_pick_mesh(name):
     return mesh
 
 
+def _seg_box(arm_obj, coll, mat, width, height, p0, p1):
+    """A box of the given cross-section spanning armature points p0->p1,
+    its long (local-y) axis along the segment."""
+    p0, p1 = mathutils.Vector(p0), mathutils.Vector(p1)
+    d = p1 - p0
+    center = (p0 + p1) / 2.0
+    rot = d.to_track_quat('Y', 'Z').to_euler()
+    _bone_box(arm_obj, coll, mat, "wrist", (width, d.length, height),
+              (center.x, center.y - 0.030, center.z), rotation=rot)
+
+
 def build_pick_hand(coll, mat):
-    """The stylized picking fist: one bone, rigid boxes, and the pick."""
+    """The stylized picking fist: fingers curl along the strings, the
+    thumb crosses over to pinch the pick against the index finger."""
     arm_obj = _new_armature("PickHand", coll)
+    arm_obj.rotation_euler = PICK_ROT.to_euler()
     bpy.ops.object.mode_set(mode='EDIT')
     eb = arm_obj.data.edit_bones
     wrist = eb.new("wrist")
@@ -250,24 +287,42 @@ def build_pick_hand(coll, mat):
     bpy.ops.object.mode_set(mode='OBJECT')
     arm_obj.pose.bones["wrist"].rotation_mode = 'XYZ'
 
-    _bone_box(arm_obj, coll, mat, "wrist", PICK_PALM_SIZE, (0.0, -0.013, 0.0))
-    # Four finger stubs folded under the palm's leading edge.
-    for i, lx in enumerate((0.030, 0.010, -0.010, -0.030)):
-        _bone_box(arm_obj, coll, mat, "wrist",
-                  (FINGER_BOX_W, 0.040, FINGER_BOX_H),
-                  (lx, 0.028, -0.017), rotation=(1.15, 0.0, 0.0))
-    # Thumb along the bridge side, its tip covering the pick pinch.
-    _bone_box(arm_obj, coll, mat, "wrist", (0.055, 0.018, 0.014),
-              (-0.022, 0.000, -0.015))
+    # Back of the hand / fist mass, sitting above and behind the pinch.
+    _bone_box(arm_obj, coll, mat, "wrist", (0.066, 0.062, 0.030),
+              (0.0, 0.008 - 0.030, 0.012))
 
-    # The pick: object origin at the pinch point so the tip lands exactly
-    # at PICK_TIP_LOCAL (armature space = bone parent space here, because
-    # the wrist bone lies along +y with roll 0 and its tail is at +0.030;
-    # compensate the tail offset in the y coordinate).
-    px, py, pz = PICK_TIP_LOCAL
+    # Four fingers curling into the palm: each runs forward-and-down from
+    # its knuckle (prox), then folds back under (dist). They are spread
+    # across x and point along +y, i.e. parallel to the strings. The
+    # middle finger is a touch longer, the outer fingers shorter.
+    knuckles = {  # x, forward-reach scale
+        "index": (0.026, 1.00), "middle": (0.009, 1.08),
+        "ring": (-0.009, 1.00), "pinky": (-0.027, 0.86),
+    }
+    for kx, scale in knuckles.values():
+        knuckle = mathutils.Vector((kx, 0.040, 0.006))
+        # Prox drops forward-down from the knuckle; the distal folds back
+        # under the palm and up, so the fingertips tuck away from the
+        # strings and only the pick reaches down.
+        mid = knuckle + mathutils.Vector((0.0, 0.011 * scale, -0.024 * scale))
+        tip = mid + mathutils.Vector((0.0, -0.023 * scale, 0.007 * scale))
+        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, knuckle, mid)
+        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, mid, tip)
+
+    # Thumb: from the treble side of the palm, crossing forward over the
+    # index to the pinch, where its pad holds the pick.
+    thumb_base = (0.030, 0.004, 0.010)
+    thumb_knuckle = (0.026, 0.028, -0.002)
+    _seg_box(arm_obj, coll, mat, 0.016, 0.015, thumb_base, thumb_knuckle)
+    _seg_box(arm_obj, coll, mat, 0.015, 0.014, thumb_knuckle, PICK_PINCH)
+
+    # The pick, pinched between thumb and index, protruding toward the
+    # strings. Built vertical in armature space (tip straight below the
+    # pinch); the hand's forward pitch angles it down at the strings.
+    length = PICK_PINCH[2] - PICK_TIP_LOCAL[2]
     _bone_box(arm_obj, coll, _pick_material(), "wrist", None,
-              (px, py - 0.030, pz + 0.026),
-              mesh=_make_pick_mesh("PickMesh"))
+              (PICK_PINCH[0], PICK_PINCH[1] - 0.030, PICK_PINCH[2]),
+              mesh=_make_pick_mesh("PickMesh", length))
     return arm_obj
 
 
