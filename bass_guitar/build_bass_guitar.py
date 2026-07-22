@@ -25,35 +25,45 @@ import bpy
 import bmesh
 import mathutils
 
+try:  # geometry/tuning source of truth, shared with fingering.py
+    from . import fret_layout
+except ImportError:  # pasted straight into Blender / run as a loose script
+    import os
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import fret_layout
+
 # ---------------------------------------------------------------------------
 # Geometry constants (metres). A 34" scale four-string electric bass.
-# Change BODY_COLOR etc. to taste.
+# The shared neck/string/tuning geometry lives in fret_layout (so tab
+# coordinates land on these meshes); only build-specific body/headstock
+# dimensions are defined here. Change BODY_COLOR etc. to taste.
 # ---------------------------------------------------------------------------
-SCALE_LEN = 0.864                   # nut-to-bridge speaking length (34")
-NUM_FRETS = 20
-NUM_STRINGS = 4
+SCALE_LEN = fret_layout.SCALE_LEN   # nut-to-bridge speaking length (34")
+NUM_FRETS = fret_layout.NUM_FRETS
+NUM_STRINGS = fret_layout.NUM_STRINGS
 
-BRIDGE_Y = 0.0                      # bridge saddles sit here, on the body
-NUT_Y = BRIDGE_Y + SCALE_LEN
+BRIDGE_Y = fret_layout.BRIDGE_Y     # bridge saddles sit here, on the body
+NUT_Y = fret_layout.NUT_Y
 
 BODY_Y0, BODY_Y1 = -0.24, 0.30     # body extent along the neck axis (~540 mm slab)
 BODY_W = 0.36                       # widest point of the slab
 BODY_THICK = 0.045
 
-NECK_THICK = 0.024                  # wood behind the fretboard (chunkier than a guitar)
-FB_THICK = 0.007                    # fretboard
+NECK_THICK = fret_layout.NECK_THICK  # wood behind the fretboard
+FB_THICK = fret_layout.FB_THICK      # fretboard
 FB_Y0 = 0.19                        # fretboard overhangs the body to reach fret 20
 HEEL_Y = BODY_Y1                    # neck wood joins the body here
 
 NUT_W = 0.042                       # neck width at the nut
 END_W = 0.062                       # neck width at the fretboard's body end
 
-FRET_H = 0.0012
+FRET_H = fret_layout.FRET_H
 STRING_R = 0.0013                   # low-E radius; bass strings are thick
-STRING_Z = NECK_THICK + FB_THICK + 0.005   # string plane above the fretboard
+STRING_Z = fret_layout.STRING_Z     # string plane above the fretboard
 
-BRIDGE_SPAN = 0.057                 # outer-string spacing at the bridge (~19 mm pitch)
-NUT_SPAN = 0.033                    # outer-string spacing at the nut (~11 mm pitch)
+BRIDGE_SPAN = fret_layout.BRIDGE_SPAN  # outer-string spacing at the bridge
+NUT_SPAN = fret_layout.NUT_SPAN        # outer-string spacing at the nut
 
 HEAD_LEN = 0.20
 HEAD_W = 0.082
@@ -70,17 +80,9 @@ def _neck_width(y):
     return NUT_W + (END_W - NUT_W) * t
 
 
-def _string_x(string, y):
-    """x of a string at neck coordinate y. Strings are straight, fanning
-    linearly from BRIDGE_SPAN at the bridge to NUT_SPAN at the nut. String 0
-    is the low E on the bass (-x) side, matching the Bass_String_<i> names."""
-    f = (string - (NUM_STRINGS - 1) / 2.0) / (NUM_STRINGS - 1)
-    return f * (BRIDGE_SPAN + (NUT_SPAN - BRIDGE_SPAN) * (y / NUT_Y))
-
-
-def _fret_y(n):
-    """y of fret wire n (equal-tempered); n=0 is the nut."""
-    return NUT_Y - SCALE_LEN * (1.0 - 2.0 ** (-n / 12.0))
+# String x-fanning and fret spacing come from the shared fret_layout module
+# (fret_layout.string_x / fret_layout.fret_y), so tab targets computed
+# outside Blender land exactly on these meshes.
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +201,7 @@ def build_neck_and_fretboard(coll):
 
     fb_top = NECK_THICK + FB_THICK
     for n in range(1, NUM_FRETS + 1):
-        y = _fret_y(n)
+        y = fret_layout.fret_y(n)
         if y < FB_Y0:
             continue
         w = _neck_width(y) - 0.002
@@ -239,8 +241,8 @@ def build_strings(coll, tuner_tops):
     the tuner posts. Low-E is string 0 on the bass (-x) side."""
     for i in range(NUM_STRINGS):
         r = STRING_R * (1.0 - 0.45 * i / (NUM_STRINGS - 1))  # bass strings thicker
-        speaking_a = (_string_x(i, BRIDGE_Y), BRIDGE_Y, STRING_Z)
-        speaking_b = (_string_x(i, NUT_Y), NUT_Y, STRING_Z)
+        speaking_a = (fret_layout.string_x(i, BRIDGE_Y), BRIDGE_Y, STRING_Z)
+        speaking_b = (fret_layout.string_x(i, NUT_Y), NUT_Y, STRING_Z)
         _add_cylinder_between(coll, f"Bass_String_{i}", speaking_a, speaking_b, r, segments=8)
         # From the nut over the headstock to the post.
         _add_cylinder_between(coll, f"Bass_StringHead_{i}",
