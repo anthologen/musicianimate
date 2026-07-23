@@ -43,34 +43,29 @@ import bpy
 import bmesh
 import mathutils
 
-INCH = 0.0254
+# Kit dimensions and positions live in the bpy-free kit_layout module, the
+# single source of truth shared with the (non-Blender) striking planner so
+# strike coordinates land exactly on the meshes built here.
+try:
+    from . import kit_layout
+except ImportError:  # loaded as a loose script via importlib, not a package
+    import os
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import kit_layout
 
-# ---------------------------------------------------------------------------
-# Kit specification. Sizes are (diameter, depth) in inches; positions are the
-# drum/cymbal centre in metres. Tilt is a lean toward the drummer (about X).
-# ---------------------------------------------------------------------------
-KICK_DIA, KICK_DEPTH = 22 * INCH, 18 * INCH
-KICK_R = KICK_DIA / 2.0
-KICK_CENTER = (0.0, 0.0, KICK_R)          # rests on the floor: centre = radius
-KICK_BATTER_Y = KICK_DEPTH / 2.0          # batter head plane (drummer side, +Y)
-
-# (name, dia_in, depth_in, center, tilt_deg)  -- vertical-axis drums.
-TOMS = [
-    ("Tom1",     12, 8,  (0.20, -0.05, 0.69), -13.0),   # small rack tom, left; tilted toward the drummer
-    ("Tom2",     13, 9,  (-0.22, -0.05, 0.72), -13.0),  # mid rack tom, right; tilted toward the drummer
-    ("FloorTom", 16, 16, (-0.49, 0.40, 0.42),  -4.0),   # floor tom, right; level with the snare, under the right hand
-]
-
-SNARE = ("Snare", 14, 5.5, (0.24, 0.40, 0.57), -6.0)   # in front of the kick, clear of the shell; tilted toward the drummer
-
-# (name, dia_in, center, tilt_deg, stand_base_xy) -- cymbals. These ride on
-# BOOM stands: the tripod base sits back/outboard (base_xy), while an angled
-# boom arm reaches the cymbal in toward the drummer (centre x,y != base x,y).
-CRASH = ("Crash", 16, (0.40, -0.10, 1.15), -16.0, (0.58, -0.46))   # tilted toward the drummer
-RIDE = ("Ride", 20, (-0.46, 0.06, 1.02), -14.0, (-0.68, -0.44))   # over the floor tom; tilted toward the drummer
-HIHAT_DIA = 14
-HIHAT_CENTER = (0.55, 0.32, 0.86)   # ~34" at the cymbals, just above snare level
-HIHAT_BASE_XY = (0.55, 0.32)
+INCH = kit_layout.INCH
+KICK_DIA, KICK_DEPTH = kit_layout.KICK_DIA, kit_layout.KICK_DEPTH
+KICK_R = kit_layout.KICK_R
+KICK_CENTER = kit_layout.KICK_CENTER          # rests on the floor: centre = radius
+KICK_BATTER_Y = kit_layout.KICK_BATTER_Y      # batter head plane (drummer side, +Y)
+TOMS = kit_layout.TOMS                         # (name, dia_in, depth_in, center, tilt_deg)
+SNARE = kit_layout.SNARE
+CRASH = kit_layout.CRASH                        # (name, dia_in, center, tilt_deg, base_xy)
+RIDE = kit_layout.RIDE
+HIHAT_DIA = kit_layout.HIHAT_DIA
+HIHAT_CENTER = kit_layout.HIHAT_CENTER
+HIHAT_BASE_XY = kit_layout.HIHAT_BASE_XY
 
 # ---------------------------------------------------------------------------
 # Palette -- minimalist: one muted shell colour, off-white heads, chrome
