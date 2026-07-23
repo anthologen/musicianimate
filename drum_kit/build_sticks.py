@@ -53,8 +53,8 @@ STICK_TIP_LOCAL = (0.0, STICK_LEN - 0.03, -0.03)
 # rather than from the audience side. A small offset from pi angles each stick
 # inward. Shared with animate_drums.py so its tip-offset math matches the rig.
 STICK_ROT0 = {
-    "R": (-0.60, 0.0, math.pi - 0.30),
-    "L": (-0.60, 0.0, math.pi + 0.30),
+    "R": (-0.32, 0.0, math.pi - 0.30),
+    "L": (-0.32, 0.0, math.pi + 0.30),
 }
 
 
@@ -65,10 +65,10 @@ def _tip_offset(side):
 
 
 def _rest_location(side):
-    """Hover the stick tip ~12 cm above this hand's convention home."""
+    """Hover the stick tip ~7 cm above this hand's convention home."""
     home = kit_layout.strike_point("hihat_closed" if side == "R" else "snare")
     off = _tip_offset(side)
-    return (home[0] - off[0], home[1] - off[1], home[2] + 0.12 - off[2])
+    return (home[0] - off[0], home[1] - off[1], home[2] + 0.07 - off[2])
 
 
 # ---------------------------------------------------------------------------

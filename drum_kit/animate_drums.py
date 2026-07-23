@@ -104,26 +104,63 @@ def _monotonic(fps, frame_start):
     return frame
 
 
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
+
+
+def _apply_stick_easing(obj, roles):
+    """Shape each hand's motion so it flows rather than teleports.
+
+    The wind-up/travel axes glide (SINE ease-in-out) between poses, but the
+    strike axes - vertical height and stick pitch - accelerate *into* the
+    contact (fast at impact, where the swing's energy goes into the hit) and
+    decelerate *out* of the rebound. Contact is a fast pass, not a full stop,
+    which is what a real stroke looks like and what SINE-everywhere lacked.
+    """
+    def role_of(frame):
+        best, bd = None, 1e9
+        for f, role in roles:
+            d = abs(f - frame)
+            if d < bd:
+                best, bd = role, d
+        return best if bd < 0.51 else None
+
+    for fc in _iter_action_fcurves(obj.animation_data.action):
+        strike_axis = ((fc.data_path == "location" and fc.array_index == 2) or
+                       (fc.data_path == "rotation_euler" and fc.array_index == 0))
+        for kp in fc.keyframe_points:
+            role = role_of(kp.co[0])
+            if strike_axis and role == "apex":
+                kp.interpolation, kp.easing = 'CUBIC', 'EASE_IN'    # accelerate down
+            elif strike_axis and role == "contact":
+                kp.interpolation, kp.easing = 'CUBIC', 'EASE_OUT'   # rebound, then settle
+            else:
+                kp.interpolation, kp.easing = 'SINE', 'EASE_IN_OUT'  # smooth glide
+
+
 def _animate_stick(root, side, notes, fps, frame_start):
     tip_off = _tip_offset(side)
     rx, ry, rz = STICK_ROT0[side]
     frame = _monotonic(fps, frame_start)
+    roles = []
     last = frame_start
 
-    def key(t, loc, pitch_extra):
+    def key(t, loc, pitch_extra, role):
         f = frame(t)
         root.location = loc
         root.rotation_euler = (rx + pitch_extra, ry, rz)
         root.keyframe_insert(data_path="location", frame=f)
         root.keyframe_insert(data_path="rotation_euler", frame=f)
+        roles.append((f, role))
         return f
 
     # Start hovering over this hand's home so it doesn't snap in from the rig
     # rest at frame 1.
     root.location = _rest_location(side)
     root.rotation_euler = (rx, ry, rz)
-    root.keyframe_insert(data_path="location", frame=frame_start)
-    root.keyframe_insert(data_path="rotation_euler", frame=frame_start)
+    root.keyframe_insert(data_path="location", frame=float(frame_start))
+    root.keyframe_insert(data_path="rotation_euler", frame=float(frame_start))
+    roles.append((float(frame_start), "rest"))
     frame(0.0)
 
     prev_t = None
@@ -131,18 +168,24 @@ def _animate_stick(root, side, notes, fps, frame_start):
         t = n["start"]
         p = mathutils.Vector((n["x"], n["y"], n["z"]))
         v = max(0.0, min(1.0, n["velocity"] / 127.0))
-        lift = LIFT_MIN + v * (LIFT_MAX - LIFT_MIN)
+        gap = (t - prev_t) if prev_t is not None else 1.0
+        # Rapid hits get a shorter, shallower wind-up so the hand stays close
+        # to the drum instead of flinging up and darting between poses.
+        busy = _clamp(gap / 0.30, 0.4, 1.0)
+        lift = (LIFT_MIN + v * (LIFT_MAX - LIFT_MIN)) * busy
+        wpitch = (WINDUP_PITCH_MIN + v * (WINDUP_PITCH_MAX - WINDUP_PITCH_MIN)) * busy
         strike = STRIKE_SLOW - v * (STRIKE_SLOW - STRIKE_FAST)
-        wpitch = WINDUP_PITCH_MIN + v * (WINDUP_PITCH_MAX - WINDUP_PITCH_MIN)
-        gap = (t - prev_t) if prev_t is not None else None
-        lead = min(0.08, 0.5 * gap) if gap is not None else 0.08
+        down = min(strike, 0.40 * gap)    # apex->contact; never precede the last hit
+        up = min(0.07, 0.45 * gap)        # contact->rebound
 
         apex = p + mathutils.Vector((0.0, 0.0, lift))
-        key(t - strike - lead, apex - tip_off, wpitch)      # wind-up apex
-        key(t, p - tip_off, 0.0)                            # contact on surface
-        last = key(t + strike * 0.6 + 0.03,
-                   p + mathutils.Vector((0.0, 0.0, HOVER)) - tip_off, wpitch * 0.4)
+        key(t - down, apex - tip_off, wpitch, "apex")         # raised, ready
+        key(t, p - tip_off, 0.0, "contact")                   # driven onto the head
+        last = key(t + up, p + mathutils.Vector((0.0, 0.0, HOVER)) - tip_off,
+                   wpitch * 0.35, "rebound")
         prev_t = t
+
+    _apply_stick_easing(root, roles)
     return last
 
 
@@ -303,8 +346,10 @@ def animate_drums(fingering_json, fps=24, frame_start=1):
         if obj is not None and wobble[name]:
             _animate_cymbal(obj, wobble[name], fps, frame_start)
 
+    # Blanket SINE for the pedals/cymbals; the sticks keep the per-axis
+    # accelerate-into-contact easing set by _animate_stick.
     for obj in touched:
-        if obj is None or obj.animation_data is None:
+        if obj is None or obj.animation_data is None or obj in stick.values():
             continue
         for fcurve in _iter_action_fcurves(obj.animation_data.action):
             for kp in fcurve.keyframe_points:
