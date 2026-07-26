@@ -120,13 +120,16 @@ elbows; it is kept modest because the drums are spread out — shifting the seat
 toward the hi-hat pulls the shoulder off the floor tom on the other side.
 
 **Facing the snare (ergonomic angle).** A right-handed drummer sits angled slightly
-toward the snare / hi-hat rather than square to the kick, so the **torso** yaws
-~18 deg toward +X (`SEAT_YAW` about the pelvis). Only the upper body twists: the
-hips, legs and throne stay **square to the pedals** (`_seat_sq`, no yaw), and each
-knee is solved into its **pedal's vertical plane** (`_solve_knee`) so the shin runs
-straight down the pedal and the thigh splays from the hip out to it -- the legs read
-square-on rather than angled off to the side, like a player who turns their upper
-body but keeps their feet planted.
+toward the snare / hi-hat rather than square to the kick, so the **whole body** —
+pelvis, hips and legs as well as the torso/shoulders/head — yaws ~18 deg toward +X
+(`SEAT_YAW` about the pelvis, applied by `_seat`), which puts the snare centred
+between the thighs like the ergonomic reference (Fig 2). The **feet** are placed at
+the raw pedal positions (not seated), so yawing the hips only splays the thighs to
+the pedals; each knee is then solved into its **pedal's vertical plane**
+(`_solve_knee`) so the shin runs straight down the pedal and the feet stay planted
+(only the round throne stays square — a symmetric seat needs no facing). (Earlier
+only the torso yawed over square hips; rotating the pelvis to match reads as the
+player squaring their seat to the snare, not just twisting over it.)
 Turning toward that side leaves the far-side drums (ride, floor tom) a little behind
 the turn, so the one piece that now needs a cross-body reach is the floor tom — it is
 pulled in toward the seat in `kit_layout` (roughly matching a real setup) so the
@@ -150,19 +153,53 @@ the tracked tip still lands on the strike point.
 
 The stick is a **standard 16" (5A) drumstick**, held **near its butt end** — only
 a small (~3 cm) overhang trails behind the fist, so almost the whole stick is
-working length swinging at the drum. The wrist is placed by `wrist_target()` as a
-**blend** (`WRIST_BACK`) of two directions from the tip: a shallow **back-and-up**
-component (so the shaft lies fairly flat across the head, a glancing stroke rather
-than a straight-down stab) and an **in-line "toward the shoulder"** component. A
-pure back-and-up grip sat so far behind the tip that on a close drum the forearm
-doubled back and the **wrist hyper-bent (~140°)** — the "strange" wrist seen in
-reference-matching; mixing in the shoulder direction keeps the grip roughly in line
-with the forearm, so the wrist rests at a **natural cock (~25–45°)** like a real
-player's while the stick stays reasonably shallow. For a far cross-body target (the
-hi-hat) even that is out of reach, so the wrist is pulled fully **in along the
-tip→shoulder line** — the closest the grip can get to the shoulder — keeping the
-elbow bent rather than locked straight. `|wrist − tip|` stays STICK_LEN either way,
-so the tip still lands exactly. A pole target keeps each elbow low and tucked.
+working length swinging at the drum. Its **attitude is set by the target**, because
+`wrist_target()` places the grip one stick-length back down a shaft held at a
+**chosen pitch** (`stick_pitch(voice)`), horizontal heading running from the shoulder
+out to the drum:
+
+- **Flat drums played from above** (snare, floor tom, side-stick — `FLAT_VOICES`):
+  the stick sits **nearly level, angled just slightly down** (`STICK_PITCH_FLAT`
+  ≈ −8°), hovering over the head. Straight-down stabbing is what a jab looks like and
+  it read as unnatural.
+- **Everything else** (rack toms, hats, ride, crashes): the **bead points up**
+  (`STICK_PITCH_UP` ≈ +28°). Reaching up/across to those pieces that way is more
+  ergonomic, and a real strike's rebound flicks the tip back up — so an up-pitched
+  ready pose is what the wrist rotates from.
+
+Because the arm is short (~0.58 m reach) and the shoulder sits high, a bead-up grip
+on a *far* piece drops the hand too low to reach. Rather than diving the grip to the
+shoulder (which jabs the bead steeply **down** — the old failure), `wrist_target()`
+**lowers the pitch only as far as anatomy forces**, taking the *highest reachable*
+stick: so the hi-hat lands ~+18°, the crashes ~+25°, the ride +28°, while snare and
+floor tom stay ~−8°. Only genuine cross-body reaches beyond arm+stick (e.g. the left
+hand crossing to the floor tom) fall through to the tip→shoulder pull and tip down.
+`|wrist − tip|` stays STICK_LEN throughout, so the tip still lands exactly (verified
+≤~2 cm both hands). A pole target keeps each elbow low and tucked.
+
+The hand's `LIMIT_ROTATION` wrist envelope (`WRIST_ROT_LIMIT`) is kept **only on the
+right hand**, and even there it never actually binds — the pitched grip and planed
+stroke, not a rotation clamp, are what keep the stick angle natural. On the **left**
+it is **disabled** (`WRIST_ROT_LIMIT["L"] = None`): the left hand's local-Euler frame
+gimbals through its across-body reaches, so per-axis limits there could not tell a
+normal raised wind-up from a wild pose — they clamped the *lifted apex* and flung the
+stick sideways (the bead missing its vertical target empty by up to ~45 cm). With the
+limit off the bead tracks the empty (≤~1.5 cm) and the wind-up is clean and vertical.
+
+Even with the left stroke vertical, the left elbow rode into the (slim) chest box —
+first forward on the raised wind-up, then, more subtly, **inboard while idle**: with
+no left note playing, the ending-bar torso twist toward the ride/cymbals rotated the
+arm base past the two-bone IK's **elbow-solution bifurcation**, flipping the elbow
+between an outboard (~x 0.33) and an inboard, chest-clipping (~x 0.15) branch. Two
+changes hold it on the outboard branch: the IK **pole angle** is raised
+(`POLE_ANGLE["L"]` 45→100°) so the elbow hangs back-and-down behind the chest, and the
+left **pole target is parented to the chest bone** so it *twists with the torso* —
+keeping the pole on the same side of the shoulder→wrist axis regardless of the spine
+twist, so the solution can't flip. (Cranking only the pole angle high enough to clear
+the twisted idle instead winged the *active* elbow out; parenting the pole fixes it at
+a tucked angle.) The right elbow's pole is pinned by its far cross-body hi-hat reach
+(moving it to clear a ~3 mm graze of the pelvis box wrecks that landing), so that
+negligible touch is left as-is.
 
 **Elbows hang and tuck, the wrist does the stroke.** Studying seated-drummer
 posture references (Drummerworld, Melodics, Drum Helper) the consistent advice is:
@@ -171,16 +208,36 @@ doing the reaching — "you only really need the action of your forearms," and "
 point should you have to fully extend your arm to reach any part of the kit." A
 raised or winged-out elbow is both tiring and unnatural.
 
-Two mechanisms give this. First, the **stroke comes from the wrist, not the arm.**
-The animator keyframes the wrist empty (which the forearm IK reaches, placing the
-elbow) *only at each hit's contact-height anchor* and lets it hold; the tip empty
-alone winds up and drops. For repeated hits on one drum the anchor is identical
-frame to frame, so the forearm and elbow are motionless and the hand bone pivots at
-the wrist to flick the stick — the arm only travels when moving to a *different*
-drum. (Before, the wrist empty bobbed up to the wind-up apex on every hit, so the
-whole arm rose and fell ~7 cm on each hi-hat note; now the arm holds and the wrist
-rotates, which reads as an economical groove and matches how a real player keeps
-time.)
+Two mechanisms give this. First, the **stroke is mostly wrist, with a little
+forearm.** The animator keyframes the wrist empty (which the forearm IK reaches,
+placing the elbow) with a small vertical **bob** through each stroke — up a fraction
+(`FOREARM_FLEX ≈ 0.3`) of the tip lift at the wind-up apex, then back onto the
+contact-height anchor at impact — while the tip empty alone winds up and drops the
+rest of the way. So the forearm/elbow now *joins* the stroke (the elbow flexes ~4–9°
+per hit) but the hand/wrist still leads it, matching how a real player hits with a
+combination of the two. Because the wrist returns exactly to the anchor at contact,
+`|wrist − tip| == STICK_LEN` there and the tip still lands on the head. For repeated
+hits on one drum the anchor is identical frame to frame, so the arm holds station and
+only the small per-hit flex plus the wrist flick play — the arm only *travels* when
+moving to a *different* drum. (Before, the wrist empty bobbed the *whole* apex height
+on every hit, so the arm rose and fell ~7 cm per hi-hat note; before that fix it held
+perfectly still with zero forearm motion. The current small bob sits between the two:
+an economical groove where the elbow visibly helps without the arm heaving.)
+
+The wind-up and rebound are then swung so the bead **cocks straight up in the stick's
+vertical plane** — perpendicular to the stick (a clean wrist hinge, no change in
+`|wrist − tip|`) and along gravity. Two earlier attempts were worse: a pure world-Z
+lift twisted the wrist ("comes in from the side"), and lifting in the forearm–stick
+plane flung the *cross-body* left bead sideways (the wind-up went "all the way left")
+because the left forearm reaches down-and-across, tilting that plane out to the side.
+Taking instead the vertical component of the up-vector perpendicular to the stick
+keeps the swing gravity-aligned: for a forward-pointing stick (the snare) it cocks
+essentially straight up (the left now lifts only ~2% sideways, ~8° off vertical); for
+a stick angled up and across (the hats/ride) it tilts to stay perpendicular but stays
+vertical (~19°, unchanged from before). A refinement pass (`_replane_strokes`) re-aims
+each apex/rebound this way after the arms are keyed; the contact key is left untouched,
+so the landing is unchanged. Because at contact `wrist == anchor` and `tip == p`, the
+stick direction is just `p − anchor`, so no rig read-back is needed.
 
 Second, elbow position is set by the IK **pole targets**. Far-out poles (well off to
 each side) winged the elbows outboard — the left splayed ~0.26 m past its shoulder on
@@ -214,10 +271,12 @@ How each maps onto the rig:
   hi-hat — it is caged per side (`use_ik_limit_x/y/z` + min/max) in a human-plausible
   envelope that contains the natural seated + cross-arm motion with margin, blocking
   impossible IK branches (like the old frame-1 over-rotation) without binding play.
-- **Wrist** (hand bone) is aimed at the stick tip by a Damped Track; a `LIMIT_ROTATION`
-  in the bone's local space then clamps it to a human wrist envelope
-  (flexion/extension/deviation). The natural stroke already stays within it (measured
-  wrist bend peaked ~86 deg), so the cap only catches extremes.
+- **Wrist** (hand bone) is aimed at the stick tip by a Damped Track; on the **right**
+  a `LIMIT_ROTATION` in the bone's local space bounds it to a human wrist envelope, but
+  it never binds (the pitched grip + planed stroke keep the pose natural on their own).
+  On the **left** the limit is **removed**: its local-Euler frame gimbals through the
+  across-body reaches, so per-axis caps clamped the raised wind-up and threw the stick
+  sideways instead of catching real extremes (see the stroke section).
 
 All limits were verified non-destructive: stick-tip landing accuracy is unchanged
 (median ~1 mm, mean ~4 mm across the strikes) with the limits enabled.

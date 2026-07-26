@@ -41,14 +41,16 @@ import bpy
 import mathutils
 
 try:
-    from .build_drummer import _rest_tip, shoulder, wrist_target
+    from .build_drummer import (_rest_tip, shoulder, wrist_target,
+                                 stick_pitch, home_voice)
     from piano.piano_midi_animator import _iter_action_fcurves
 except ImportError:  # loaded as a loose script via importlib
     import sys
     _HERE = os.path.dirname(os.path.abspath(__file__))
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
-    from build_drummer import _rest_tip, shoulder, wrist_target
+    from build_drummer import (_rest_tip, shoulder, wrist_target,
+                               stick_pitch, home_voice)
     from piano.piano_midi_animator import _iter_action_fcurves
 
 
@@ -56,6 +58,11 @@ except ImportError:  # loaded as a loose script via importlib
 LIFT_MIN, LIFT_MAX = 0.03, 0.14        # stick apex height above the surface
 STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
 HOVER = 0.03                            # rebound height above the surface
+# A groove stroke is mostly wrist, but the forearm should visibly join in: the
+# wrist empty (the forearm IK target) bobs a little through each stroke so the
+# elbow flexes too, adding a fraction of the tip's travel. Kept small so the
+# hand/wrist still leads and the elbow only helps.
+FOREARM_FLEX = 0.3                     # wrist bob as a fraction of the tip lift
 
 # --- kick ------------------------------------------------------------------
 BEATER_STRIKE = math.radians(6.0)      # beater angle at contact (into head)
@@ -182,6 +189,7 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     tframe = _monotonic(fps, frame_start)   # tip empty (3 keys/hit)
     wframe = _monotonic(fps, frame_start)   # wrist empty (1 key/hit -> holds)
     roles = []
+    strokes = []                            # (apex_f, contact_f, rebound_f, p, lift, anchor)
     last = frame_start
 
     rest = _rest_tip(side)
@@ -189,7 +197,7 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     target.keyframe_insert(data_path="location", frame=float(frame_start))
     roles.append((float(frame_start), "rest"))
     tframe(0.0)
-    wrist.location = wrist_target(sh, rest)
+    wrist.location = wrist_target(sh, rest, stick_pitch(home_voice(side)))
     wrist.keyframe_insert(data_path="location", frame=float(frame_start))
     wframe(0.0)
 
@@ -218,11 +226,20 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         down = min(strike, 0.40 * gap)    # apex->contact; never precede the last hit
         up = min(0.07, 0.45 * gap)        # contact->rebound
 
-        # Arm anchor: the wrist sits at play height and holds; the hand pivots.
-        key_wrist(t, wrist_target(sh, p))
-        key_tip(t - down, p + mathutils.Vector((0.0, 0.0, lift)), "apex")  # wrist cocks up
-        key_tip(t, p, "contact")                                          # onto the head
-        last = key_tip(t + up, p + mathutils.Vector((0.0, 0.0, HOVER)), "rebound")
+        # Arm: the wrist holds at play height but bobs a little through the
+        # stroke so the forearm/elbow joins in -- cocking up with the wind-up
+        # then dropping back onto the anchor at contact. The bob is a fraction of
+        # the tip lift, so the wrist/hand still leads and the elbow only assists.
+        anchor = mathutils.Vector(wrist_target(sh, p, stick_pitch(n["voice"])))
+        flex = FOREARM_FLEX * lift
+        key_wrist(t - down, anchor + mathutils.Vector((0.0, 0.0, flex)))   # elbow cocks up
+        key_wrist(t, anchor)                                               # onto the head
+        key_wrist(t + up, anchor + mathutils.Vector((0.0, 0.0, FOREARM_FLEX * HOVER)))
+        af = key_tip(t - down, p + mathutils.Vector((0.0, 0.0, lift)), "apex")  # cocks up
+        cf = key_tip(t, p, "contact")                                          # onto the head
+        rf = key_tip(t + up, p + mathutils.Vector((0.0, 0.0, HOVER)), "rebound")
+        last = rf
+        strokes.append((af, cf, rf, p.copy(), lift, anchor.copy()))
         prev_t = t
 
     _apply_stick_easing(target, roles)
@@ -231,7 +248,52 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     for fc in _iter_action_fcurves(wrist.animation_data.action):
         for kp in fc.keyframe_points:
             kp.interpolation, kp.easing = 'SINE', 'EASE_IN_OUT'
-    return last
+    return last, strokes
+
+
+def _replane_strokes(target, side, strokes):
+    """Re-aim each stroke's wind-up/rebound so the bead cocks straight UP in the
+    stick's VERTICAL plane -- perpendicular to the stick, along gravity -- rather
+    than straight up in world Z (which twisted the wrist) or in the forearm-stick
+    plane (which flung the cross-body left bead sideways -- "all the way left").
+
+    Lifting perpendicular to the stick keeps it a clean wrist hinge (no change in
+    |wrist - tip|), and taking the vertical component of that keeps the swing in
+    the vertical plane so the bounce is gravity-aligned. For a forward-pointing
+    stick (the snare) this cocks essentially straight up; for a stick angled up
+    and across (the hats/ride) it tilts to stay perpendicular but stays vertical.
+    The offset magnitude (lift/HOVER) and the CONTACT key are untouched, so the
+    tip still lands exactly on the head. At contact wrist == anchor and tip == p,
+    so the stick direction is simply p - anchor (no rig readback needed)."""
+    if not strokes or target.animation_data is None:
+        return
+    fcs = {}
+    for fc in _iter_action_fcurves(target.animation_data.action):
+        if fc.data_path == "location":
+            fcs[fc.array_index] = fc
+
+    def set_key(frame, loc):
+        for i in (0, 1, 2):
+            fc = fcs.get(i)
+            if fc is None:
+                continue
+            for kp in fc.keyframe_points:
+                if abs(kp.co[0] - frame) < 0.01:
+                    kp.co[1] = loc[i]
+                    break
+        for fc in fcs.values():
+            fc.update()
+
+    z = mathutils.Vector((0.0, 0.0, 1.0))
+    for af, cf, rf, p, lift, anchor in strokes:
+        stick = p - anchor                            # wrist -> bead (contact)
+        if stick.length < 1e-6:
+            continue
+        stick.normalize()
+        lift_dir = z - z.dot(stick) * stick           # up, perpendicular to stick
+        lift_dir = lift_dir.normalized() if lift_dir.length > 1e-6 else z
+        set_key(af, p + lift * lift_dir)
+        set_key(rf, p + HOVER * lift_dir)
 
 
 def _key_ankle(arm, bone, frame_fn):
@@ -490,10 +552,17 @@ def animate_drums(fingering_json, fps=24, frame_start=1):
             wobble[n["target"]].append(n)
 
     last = frame_start
+    stroke_rec = {}
     for side in ("R", "L"):
         if ik[side] is not None and wrist[side] is not None:
-            last = max(last, _animate_arm(ik[side], wrist[side], side,
-                                          by_hand[side], fps, frame_start))
+            lst, stroke_rec[side] = _animate_arm(ik[side], wrist[side], side,
+                                                 by_hand[side], fps, frame_start)
+            last = max(last, lst)
+    # Re-aim each hand's wind-up/rebound to cock straight up in the stick's
+    # vertical plane (gravity-aligned, no sideways fling).
+    for side in ("R", "L"):
+        if ik[side] is not None and side in stroke_rec:
+            _replane_strokes(ik[side], side, stroke_rec[side])
     if beater is not None and kboard is not None and drummer is not None:
         last = max(last, _animate_kick(beater, kboard, drummer, "foot.R",
                                        ankle_e["R"], kick, fps, frame_start))
