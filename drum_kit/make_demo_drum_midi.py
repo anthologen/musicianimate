@@ -6,8 +6,11 @@ numbers, so it auditions correctly in any GM player and drives the whole
 drum pipeline. The arrangement is built to touch every piece of the kit at
 least once while staying a musical groove:
 
-  1-2. Basic rock beat  - kick on 1 & 3, snare on 2 & 4, closed hats in
+  1.   Basic rock beat  - kick on 1 & 3, snare on 2 & 4, closed hats in
        eighths: the core groove the sticking convention should nail.
+  2.   Open-hat groove   - the same beat but the hats OPEN on the "&" of 2 and
+       4 and close again on the next beat, so the foot rocks the pedal up/down
+       (heel-down technique) and the top cymbal lifts and drops.
   3.   Dynamics bar      - the same beat with a hi-hat crescendo and an
        accented backbeat, so wind-up visibly scales with velocity.
   4.   Tom fill          - a descending snare -> hi -> mid -> floor fill in
@@ -69,16 +72,28 @@ def build_demo_notes(tpb):
     lead_in = beat
     bar_start = lead_in
 
-    # --- Bars 1-2: basic rock beat -----------------------------------------
-    for _ in range(2):
-        add(bar_start + 0 * beat, KICK, 100)
-        add(bar_start + 2 * beat, KICK, 100)
-        add(bar_start + 1 * beat, SNARE, 105)
-        add(bar_start + 3 * beat, SNARE, 105)
-        for e in range(8):
-            vel = 88 if e % 2 == 0 else 66   # accent the downbeats
-            add(bar_start + e * eighth, HAT_CLOSED, vel)
-        bar_start += bar
+    # --- Bar 1: basic rock beat, closed hats (foot holds the pedal down) ----
+    add(bar_start + 0 * beat, KICK, 100)
+    add(bar_start + 2 * beat, KICK, 100)
+    add(bar_start + 1 * beat, SNARE, 105)
+    add(bar_start + 3 * beat, SNARE, 105)
+    for e in range(8):
+        add(bar_start + e * eighth, HAT_CLOSED, 88 if e % 2 == 0 else 66)
+    bar_start += bar
+
+    # --- Bar 2: OPEN hi-hat groove -- the foot lifts the pedal to open the
+    #     hats on the "&" of 2 and 4, then closes them again on the next beat
+    #     (a heel-down rocking of the pedal between open and closed). ---------
+    add(bar_start + 0 * beat, KICK, 100)
+    add(bar_start + 2 * beat, KICK, 100)
+    add(bar_start + 1 * beat, SNARE, 105)
+    add(bar_start + 3 * beat, SNARE, 105)
+    for e in range(8):
+        if e in (3, 7):                       # "&" of 2 and 4 -> open (pedal up)
+            add(bar_start + e * eighth, HAT_OPEN, 96)
+        else:                                 # closed (pedal down)
+            add(bar_start + e * eighth, HAT_CLOSED, 88 if e % 2 == 0 else 66)
+    bar_start += bar
 
     # --- Bar 3: dynamics - hi-hat crescendo + accented backbeat ------------
     add(bar_start + 0 * beat, KICK, 105)
@@ -114,6 +129,8 @@ def build_demo_notes(tpb):
     add(bar_start + 1 * beat, SNARE, 105)
     add(bar_start + 3 * beat, SNARE, 105)
     for e in range(8):
+        if e == 7:
+            continue   # the open hat below takes this "and" instead of the ride
         note = RIDE_BELL if e % 4 == 0 else RIDE   # bell on the beat
         add(bar_start + e * eighth, note, 80 if e % 2 == 0 else 62)
     add(bar_start + 1 * beat, HAT_PEDAL, 70)       # left-foot chick on 2 & 4

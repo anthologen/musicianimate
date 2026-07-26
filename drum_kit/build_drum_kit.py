@@ -274,12 +274,14 @@ def build_boom_stand(coll, name, base_xy, cymbal_center):
          location=tuple(back), rotation=(math.radians(90), 0, 0))
 
 
-def build_tube_stand(coll, name, base_xy, top_z, spread=0.24):
-    """A minimalist chrome stand: one upright tube + three splayed legs."""
+def build_tube_stand(coll, name, base_xy, top_z, spread=0.24, leg_yaw=0.0):
+    """A minimalist chrome stand: one upright tube + three splayed legs.
+    ``leg_yaw`` (deg) rotates the tripod about the post so, e.g., the hi-hat's
+    pedal passes through the GAP between two legs instead of hitting one."""
     bx, by = base_xy
     _cyl_between(coll, f"{name}_Post", (bx, by, 0.02), (bx, by, top_z), TUBE_R)
     for i in range(3):
-        a = math.radians(90 + i * 120)   # legs point away from the drummer
+        a = math.radians(90 + leg_yaw + i * 120)
         _cyl_between(coll, f"{name}_Leg_{i}", (bx, by, 0.10),
                      (bx + spread * math.cos(a), by + spread * math.sin(a), 0.0), LEG_R)
 
@@ -296,33 +298,46 @@ def build_hihat(coll):
     # Top cymbal a small gap above -- slides down in Z to "close".
     top = _add(coll, "HiHat_Top", _cymbal_mesh("HiHat_TopMesh", r),
                location=(cx, cy, cz + 0.045))
-    build_tube_stand(coll, "HiHat_Stand", HIHAT_BASE_XY, cz - 0.02)
+    # Rotate the tripod so a GAP between two legs faces the pedal (which runs
+    # back toward the drummer at an angle), not a leg.
+    build_tube_stand(coll, "HiHat_Stand", HIHAT_BASE_XY, cz - 0.02, leg_yaw=90.0)
     # Pull rod up the centre; the top cymbal clutches onto it.
     _cyl_between(coll, "HiHat_PullRod", (cx, cy, 0.05), (cx, cy, cz + 0.06), 0.004)
-    build_pedal(coll, "HiHat", (cx, cy + 0.02))
+    # Pedal toe end at the stand centre (cx, cy) -- the pull rod / linkage point.
+    build_pedal(coll, "HiHat", (cx, cy), yaw=kit_layout.HIHAT_PEDAL_YAW)
     return top, bottom
 
 
 # ---------------------------------------------------------------------------
 # Pedals -- footboard hinged at the heel + (for the kick) a swinging beater.
 # ---------------------------------------------------------------------------
-def build_pedal(coll, name, base_xy):
-    """A flat footboard hinged at its heel (+Y end). Origin at the hinge so a
-    rotation about X presses the toe down."""
-    bx, by = base_xy
-    heel_y = by + 0.24
+PEDAL_SLOPE = math.radians(13.0)   # footboards rest sloped up toward the toe
+
+
+def build_pedal(coll, name, base_xy, yaw=0.0):
+    """A footboard hinged at its heel. ``base_xy`` is the TOE end, which stays
+    fixed; ``yaw`` swings the heel about that toe (so the pedal can point back
+    toward the drummer while its toe stays aligned with, e.g., the hi-hat stand).
+    A rotation about X presses the toe down; the board also rests sloped up
+    toward the toe (PEDAL_SLOPE)."""
+    bx, by = base_xy            # toe end (kept fixed under the yaw)
+    s, c = math.sin(yaw), math.cos(yaw)
+    heel_x = bx - 0.24 * s      # heel is 0.24 back from the toe, swung by the yaw
+    heel_y = by + 0.24 * c
     board = _cube_mesh(f"{name}_FootboardMesh", 0.075, 0.24, 0.010)
-    # Build the plate so its +Y (heel) edge is at the local origin.
-    board_obj = _add(coll, f"{name}_Footboard", board,
-                     location=(bx, heel_y, 0.018))
-    board_obj.location.y = heel_y
-    # Shift geometry so origin is the heel hinge.
+    board_obj = _add(coll, f"{name}_Footboard", board, location=(heel_x, heel_y, 0.018))
+    # Shift geometry so the origin is the heel hinge (its +Y edge).
     for v in board.vertices:
         v.co.y -= 0.12
     board.update()
-    # Heel plate on the floor.
-    _add(coll, f"{name}_HeelPlate", _cube_mesh(f"{name}_HeelMesh", 0.09, 0.05, 0.012),
-         location=(bx, heel_y + 0.01, 0.006))
+    # Real pedals slope UP from the heel (on the floor) to the toe. A negative
+    # X tilt raises the toe end; the animator's positive X press then presses it
+    # down from that resting slope.
+    board_obj.rotation_euler = (-PEDAL_SLOPE, 0.0, yaw)
+    # Heel plate on the floor, angled to match.
+    heel = _add(coll, f"{name}_HeelPlate", _cube_mesh(f"{name}_HeelMesh", 0.09, 0.05, 0.012),
+                location=(heel_x, heel_y + 0.01, 0.006))
+    heel.rotation_euler = (0.0, 0.0, yaw)
     return board_obj
 
 

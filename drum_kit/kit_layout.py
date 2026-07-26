@@ -35,9 +35,11 @@ KICK_BATTER_Y = KICK_DEPTH / 2.0          # batter head plane (drummer side, +Y)
 
 # (name, dia_in, depth_in, center, tilt_deg)  -- vertical-axis drums.
 TOMS = [
-    ("Tom1",     12, 8,  (0.20, -0.05, 0.69), -13.0),   # small rack tom, left
-    ("Tom2",     13, 9,  (-0.22, -0.05, 0.72), -13.0),  # mid rack tom, right
-    ("FloorTom", 16, 16, (-0.49, 0.40, 0.42),  -4.0),   # floor tom, right
+    ("Tom1",     12, 8,  (0.20, 0.01, 0.69), -13.0),    # small rack tom, left
+    ("Tom2",     13, 9,  (-0.22, 0.01, 0.72), -13.0),   # mid rack tom, right
+    ("FloorTom", 16, 16, (-0.38, 0.33, 0.44),  -4.0),   # floor tom, right (pulled
+    # in toward the seat so the (back-seated, snare-angled) drummer reaches the
+    # toms without over-reaching or crossing)
 ]
 
 SNARE = ("Snare", 14, 5.5, (0.24, 0.40, 0.57), -6.0)   # in front of the kick
@@ -49,6 +51,12 @@ HIHAT_DIA = 14
 HIHAT_CENTER = (0.55, 0.32, 0.86)   # ~34" at the cymbals, just above snare
 HIHAT_BASE_XY = (0.55, 0.32)
 HIHAT_TOP_GAP = 0.045               # rest gap of HiHat_Top above HiHat_Bottom
+# The hi-hat pedal's toe end sits at the stand centre (the pull-rod point) and
+# the footboard is yawed about that toe so it points back toward the DRUMMER
+# (heel swings toward the body, -X) -- the ergonomic angle -- while the toe stays
+# aligned with the stand. The foot and the stand's leg gap follow this angle.
+# Positive = heel swings toward the drummer (-X); the toe stays put.
+HIHAT_PEDAL_YAW = math.radians(30.0)
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,11 @@ CONV_PENALTY = 0.6     # metres-equivalent cost for leaving a voice's
 BUSY_GAP = 0.05        # s; a hand asked to move far within this is flagged
 BUSY_DIST = 0.15       # m of travel that BUSY_GAP cannot physically cover
 
+# Far-side cymbals: the hi-hat sits at the player's far left, the ride at the
+# far right, so only their convention hand reaches them without the other arm
+# contorting across the body. These never alternate off that hand.
+LOCKED_VOICES = {"hihat_closed", "hihat_open", "ride", "ride_bell"}
+
 
 def _beat_mapper(midi_path):
     """Return beats_at(seconds) -> fractional beats, inverting the tempo map.
@@ -105,13 +110,24 @@ def _cost(state, note, hand):
     return c
 
 
-def _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, warnings):
+def _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, prev_voice, warnings):
     """Return [(note, 'R'|'L'), ...] for the simultaneous stick notes."""
     if len(stick_notes) == 1:
         n = stick_notes[0]
         gap = (t - prev_stick_t) if prev_stick_t is not None else None
-        if prev_hand is not None and gap is not None and gap < FAST_GAP:
-            h = _other(prev_hand)                       # single-stroke roll
+        fast = prev_hand is not None and gap is not None and gap < FAST_GAP
+        conv = n["limb"]                                 # 'R', 'L', or None
+        if conv in ("R", "L"):
+            # A convention voice (hi-hat/ride -> R, snare -> L) keeps its hand,
+            # so returning to a groove after a fill re-anchors the grip. A fast
+            # repeat of the SAME central voice (e.g. a snare roll) may alternate,
+            # but far-side cymbals stay locked - this stops blind alternation
+            # from flinging a hand across the kit into a contorted reach.
+            can_roll = (fast and prev_voice == n["voice"]
+                        and n["voice"] not in LOCKED_VOICES)
+            h = _other(prev_hand) if can_roll else conv
+        elif fast:
+            h = _other(prev_hand)                        # flex voices: roll/fill
         else:
             h = "R" if _cost(hand["R"], n, "R") <= _cost(hand["L"], n, "L") else "L"
         return [(n, h)]
@@ -163,6 +179,7 @@ def plan_strikes(notes, beats_at):
     hihat_events = []          # (t, 'open'|'closed')
     prev_hand = None
     prev_stick_t = None
+    prev_voice = None
 
     for ev in group_events(notes):
         t = ev["t"]
@@ -188,7 +205,8 @@ def plan_strikes(notes, beats_at):
         if not stick_notes:
             continue
 
-        assigned = _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, warnings)
+        assigned = _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t,
+                                 prev_voice, warnings)
         for n, h in assigned:
             if t - hand[h]["t"] < BUSY_GAP and _dist(hand[h]["pt"], n["point"]) > BUSY_DIST:
                 warnings.append(f"{h} hand asked to cross the kit within "
@@ -196,7 +214,10 @@ def plan_strikes(notes, beats_at):
             _emit(out, n, h, beats_at)
             hand[h] = {"t": t, "pt": n["point"]}
 
-        prev_hand = assigned[0][1] if len(assigned) == 1 else None
+        if len(assigned) == 1:
+            prev_hand, prev_voice = assigned[0][1], assigned[0][0]["voice"]
+        else:
+            prev_hand, prev_voice = None, None
         prev_stick_t = t
 
     out.sort(key=lambda r: (r["start"], r["voice"]))
@@ -271,12 +292,17 @@ def selftest():
     check("convention: hats on right hand", all(h == "R" for h in hats), str(hats))
     check("convention: snare on left hand", all(s == "L" for s in snares), str(snares))
 
-    # Fast single-stroke run: sixteenths at 120 BPM alternate hands.
-    burst = _mknotes([(i * 0.125, 42) for i in range(8)])
+    # Fast single-stroke run on a central voice (snare) alternates hands; the
+    # far-side hi-hat/ride stay locked to their convention hand instead.
+    burst = _mknotes([(i * 0.125, 38) for i in range(8)])
     out, _, _, _ = plan_strikes(burst, beats_at)
     hands = [n["limb"] for n in out]
     alternating = all(hands[i] != hands[i + 1] for i in range(len(hands) - 1))
-    check("rapid run alternates sticks", alternating, "".join(hands))
+    check("rapid snare run alternates sticks", alternating, "".join(hands))
+    hat_run = _mknotes([(i * 0.125, 42) for i in range(6)])
+    out, _, _, _ = plan_strikes(hat_run, beats_at)
+    check("fast hi-hat stays on the right hand",
+          all(n["limb"] == "R" for n in out), "".join(n["limb"] for n in out))
 
     # Simultaneous snare + hat: the two hands split (never double-booked).
     both = _mknotes([(0.0, 38), (0.0, 42)])
