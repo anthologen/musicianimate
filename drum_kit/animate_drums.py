@@ -42,7 +42,7 @@ import mathutils
 
 try:
     from .build_drummer import (_rest_tip, shoulder, wrist_target,
-                                 stick_pitch, home_voice)
+                                 stick_pitch, home_voice, SEAT_YAW)
     from piano.piano_midi_animator import _iter_action_fcurves
 except ImportError:  # loaded as a loose script via importlib
     import sys
@@ -50,7 +50,7 @@ except ImportError:  # loaded as a loose script via importlib
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
     from build_drummer import (_rest_tip, shoulder, wrist_target,
-                               stick_pitch, home_voice)
+                               stick_pitch, home_voice, SEAT_YAW)
     from piano.piano_midi_animator import _iter_action_fcurves
 
 
@@ -84,8 +84,21 @@ HAT_CLOSE_DROP = 0.039                 # how far HiHat_Top slides down to close
 HAT_FOOT_PRESS = math.radians(15)      # footboard press while closed
 
 # --- torso (spine twist + lean toward the centre of activity) --------------
-TWIST_GAIN = 0.32                      # rad of spine twist per metre of centre-x
-TWIST_MAX = math.radians(15)           # cap the twist
+# The upper body turns to FACE the centre of activity. The spine twist aims the
+# chest a fraction (TWIST_FOLLOW) of the way to the bearing of the active drum(s),
+# and must overcome the seated body's baseline facing (SEAT_YAW, ~18 deg toward the
+# hi-hat/snare on +X) to turn toward the RIGHT-side kit (floor tom, ride on -X) --
+# so `twist = TWIST_FOLLOW*bearing - SEAT_YAW`. Facing right needs the larger swing,
+# hence a generous cap.
+TWIST_FOLLOW = 0.72                    # fraction of the activity bearing the chest faces
+TWIST_MAX = math.radians(34)           # cap the spine twist (either direction)
+# The torso must not turn so far RIGHT that the left hand's current target sits too
+# far to the left of where the chest faces: past this margin the left stick reaches
+# across (the snare backbeat flips) AND the left elbow rides into the chest. Capping
+# the rightward twist by the LEFT hand's target holds the torso near centre while a
+# snare is live, yet lets it turn fully right for a same-side fill (both hands on the
+# toms, where this never binds). The right hand reaching its own side needs no cap.
+REACH_MARGIN = math.radians(20)
 # The drummer sits upright and leans forward only in proportion to how far
 # forward the hands are reaching: none for the snare / hi-hat groove (close in),
 # growing as they reach out to the toms and crashes. (A big lean also tilts the
@@ -464,26 +477,67 @@ def _animate_torso(arm, stick_notes, fps, frame_start):
         sp.rotation_euler = (lean, twist, 0.0)
         arm.keyframe_insert(data_path=path, frame=frame(t))
 
+    # Chest pivot (shoulder midpoint): the origin the activity bearing is measured
+    # from and about which the twist turns.
+    cxp = (shoulder("L")[0] + shoulder("R")[0]) / 2.0
+    cyp = (shoulder("L")[1] + shoulder("R")[1]) / 2.0
     sh_y = shoulder("L")[1]               # seated shoulder Y (the reach origin)
-    key(0.0, 0.0, 0.0)                    # rest: upright
+    key(0.0, 0.0, 0.0)                    # rest: seated baseline facing (SEAT_YAW)
     notes = sorted(stick_notes, key=lambda n: n["start"])
     if not notes:
         return frame_start
+    by = {"R": [n for n in notes if n["limb"] == "R"],
+          "L": [n for n in notes if n["limb"] == "L"]}
+
+    def hand_centre(hand_notes, t):
+        """Proximity-weighted target of ONE hand near time t (or None if idle)."""
+        ws = [(n, 1.0 / (0.06 + abs(n["start"] - t)))
+              for n in hand_notes if abs(n["start"] - t) <= TORSO_WIN]
+        if not ws:
+            return None
+        w = sum(x for _, x in ws)
+        return (sum(n["x"] * x for n, x in ws) / w,
+                sum(n["y"] * x for n, x in ws) / w)
 
     t, t_end = notes[0]["start"], notes[-1]["start"]
     last = frame_start
     while t <= t_end + 1e-6:
-        near = [n for n in notes if abs(n["start"] - t) <= TORSO_WIN]
-        if near:
-            cx = sum(n["x"] for n in near) / len(near)          # centre of activity
-            cy = sum(n["y"] for n in near) / len(near)          # how far forward
+        # Face the midpoint of where the TWO hands are, weighting each hand equally
+        # (not each note): so a split ride-right + snare-left groove compromises
+        # near centre and keeps both reachable, while a same-side fill (both on the
+        # floor tom) turns the torso fully toward it. Over-weighting the busier hand
+        # used to twist so far that the other hand's stick had to flip to reach.
+        cR, cL = hand_centre(by["R"], t), hand_centre(by["L"], t)
+        hands = [c for c in (cR, cL) if c]
+        if hands:
+            cx = sum(c[0] for c in hands) / len(hands)
+            cy = sum(c[1] for c in hands) / len(hands)
+            bearing = math.atan2(cx - cxp, cyp - cy)            # +left / -right
+            # Twist RELATIVE to the seated baseline facing (SEAT_YAW): no twist when
+            # the activity sits at the baseline, turning further only as it moves
+            # off it. Turning right (toward the floor tom / ride) therefore has to
+            # cross the whole ~18 deg left bias, which the follow factor scales.
+            twist = TWIST_FOLLOW * (bearing - SEAT_YAW)
+            # Don't turn further right than the LEFT hand allows (facing == SEAT_YAW
+            # + twist): when the left hand is on the snare this holds the torso near
+            # centre so the backbeat stays reachable, but when it is also on the
+            # right (a tom fill) the floor never binds and the torso turns fully
+            # toward the kit's right side.
+            if cL is not None:
+                bL = math.atan2(cL[0] - cxp, cyp - cL[1])
+                twist = max(twist, (bL - REACH_MARGIN) - SEAT_YAW)
+            else:
+                # Left hand idle (e.g. a ride passage): hold at/left of the seated
+                # baseline rather than turning right, so the resting left arm is not
+                # dragged into the torso. It turns right only when the left hand is
+                # actively on the right side (a tom fill).
+                twist = max(twist, 0.0)
+            twist = _clamp(twist, -TWIST_MAX, TWIST_MAX)
+            reach = sh_y - cy
+            lean = LEAN_REACH * _clamp((reach - REACH_NEAR) / (REACH_FAR - REACH_NEAR),
+                                       0.0, 1.0)
         else:
-            cx, cy = 0.0, sh_y                                  # idle -> upright
-        twist = max(-TWIST_MAX, min(TWIST_MAX, -TWIST_GAIN * cx))  # +x (left) -> face left
-        # Lean only as far as the reach demands: 0 when the hands are close in
-        # (snare/hi-hat), ramping to LEAN_REACH out at the toms/crashes.
-        reach = sh_y - cy
-        lean = LEAN_REACH * _clamp((reach - REACH_NEAR) / (REACH_FAR - REACH_NEAR), 0.0, 1.0)
+            twist, lean = 0.0, 0.0                              # idle -> seated baseline
         f = frame(t)
         sp.rotation_euler = (lean, twist, 0.0)
         arm.keyframe_insert(data_path=path, frame=f)

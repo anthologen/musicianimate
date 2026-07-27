@@ -327,15 +327,24 @@ the geometry the IK solves.
   with shod feet on the pedals; four independent striking limbs, cross-arm
   hi-hat by default.
 - The rest pose is **upright** (the upper spine, neck and head sit essentially
-  over the hips). The spine **twists** toward the centre of what the hands are
-  playing (a smoothed activity centre, SINE-eased), which swings the shoulders so
-  the IK arms adjust; and it **leans forward only in proportion to how far
-  forward the hands reach** — ~0 for the close-in snare / hi-hat groove, ramping
-  to a modest maximum (`LEAN_REACH`) out at the toms and crashes. So the drummer
-  sits tall and dips in only when a reach demands it, rather than hunching over
-  the kit the whole time. The lean stays gentle and the chest is slim because the
-  cross-arm reach to the hi-hat passes just in front of the torso — a deep chest
-  or a big lean would tilt the body into that path and the arm would clip.
+  over the hips). The spine **twists to FACE the centre of activity**: it aims the
+  chest a fraction (`TWIST_FOLLOW`) of the way to the *bearing* of the active
+  drum(s), measured off the seated baseline facing (`SEAT_YAW`, ~18° toward the
+  hi-hat/snare on +X) — so turning toward the RIGHT-side kit (floor tom, ride)
+  must cross that whole left bias, which is why the drummer used to stay facing
+  away from the floor tom when both sticks struck it. The activity centre weights
+  the **two hands equally** (not each note), so a split ride-right + snare-left
+  groove faces near centre while a same-side tom fill turns the torso fully toward
+  it. A per-frame **reach cap** (`REACH_MARGIN`) then keeps the twist from turning
+  so far right that the left hand's live target (or its idle snare home) falls out
+  of reach — which both flipped the snare stick and drove the left elbow into the
+  chest; the cap binds only when the left hand is on the far (left/centre) side, so
+  the floor-tom fill is unaffected. It also **leans forward only in proportion to
+  how far forward the hands reach** — ~0 for the close-in snare / hi-hat groove,
+  ramping to a modest maximum (`LEAN_REACH`) out at the toms and crashes. So the
+  drummer sits tall and dips in only when a reach demands it. The lean stays gentle
+  and the chest is slim because the cross-arm reach to the hi-hat passes just in
+  front of the torso — a deep chest or big lean would tilt the body into that path.
 - Simplifications in the stand-in: the legs are static (only the arms, wrists,
   ankles and spine animate) and there is no finger articulation — deliberate,
   since this is a placeholder for a real character model. The wrist empty and
