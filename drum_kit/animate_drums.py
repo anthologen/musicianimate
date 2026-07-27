@@ -55,14 +55,17 @@ except ImportError:  # loaded as a loose script via importlib
 
 
 # --- velocity -> motion (louder = taller wind-up, faster strike) -----------
-LIFT_MIN, LIFT_MAX = 0.03, 0.14        # stick apex height above the surface
+LIFT_MIN, LIFT_MAX = 0.03, 0.20        # stick apex height above the surface
 STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
 HOVER = 0.03                            # rebound height above the surface
 # A groove stroke is mostly wrist, but the forearm should visibly join in: the
-# wrist empty (the forearm IK target) bobs a little through each stroke so the
-# elbow flexes too, adding a fraction of the tip's travel. Kept small so the
-# hand/wrist still leads and the elbow only helps.
-FOREARM_FLEX = 0.3                     # wrist bob as a fraction of the tip lift
+# wrist empty (the forearm IK target) bobs through each stroke so the elbow
+# flexes too, taking a fraction of the tip's travel; the REST of the tip's
+# travel comes from the hand pivoting at the wrist (the hand bone tracks the
+# tip target from a wrist that only rose partway, so the remainder is wrist
+# rotation, not elbow bend). Kept just under half so wrist rotation carries
+# slightly more of the stick's height than the elbow does.
+FOREARM_FLEX = 0.45                    # wrist bob as a fraction of the tip lift
 
 # --- kick ------------------------------------------------------------------
 BEATER_STRIKE = math.radians(6.0)      # beater angle at contact (into head)
