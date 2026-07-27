@@ -185,10 +185,16 @@ SHOULDER_IK_LIMIT = {
 # clamping the authored strokes -- their ranges are the observed play range plus
 # margin, and are kept wide on the left hand, whose local-Euler frame gimbals
 # through the cross-body tom reaches.
-WRIST_ROT_LIMIT = {
-    "L": None,   # disabled: its local-Euler frame gimbals; see _add_targets
-    "R": {"x": (-15.0, 50.0), "y": (-20.0, 35.0), "z": (-75.0, 45.0)},
-}
+# Shared human-wrist envelope (deg, local X/Y/Z), IDENTICAL on both hands for
+# consistency. Both hand bones are rolled to the same reference (local Z up, see
+# _build_skeleton), so one envelope means the same thing on each side. It contains
+# the full observed play range with margin -- wider on Z, where the left's cross-
+# body snare reach twists the wrist most -- so it bounds gross extremes without
+# clamping the (primarily vertical) strokes. (An earlier tight, per-side limit
+# clamped the raised left apex and flung the stick sideways, because the left hand
+# had inherited a sideways-rolled reference frame ~60 deg off the right's.)
+_WRIST_ENVELOPE = {"x": (-90.0, 55.0), "y": (-40.0, 55.0), "z": (-140.0, 35.0)}
+WRIST_ROT_LIMIT = {"L": dict(_WRIST_ENVELOPE), "R": dict(_WRIST_ENVELOPE)}
 
 # Elbow rest bend (degrees), filled in while building; used to place the IK
 # flexion limit just short of straight so the elbow cannot hyperextend.
@@ -475,8 +481,15 @@ def _build_skeleton(coll):
         clav = bone(f"clav.{side}", _seat(POSE["neck"]), tuple(s), chest, False)
         up = bone(f"upper_arm.{side}", tuple(s), tuple(elbow), clav, False)
         fore = bone(f"forearm.{side}", tuple(elbow), tuple(wrist_bone), up, True)
-        bone(f"hand.{side}", tuple(wrist_bone), tuple(wrist_bone + hdir * STICK_LEN),
-             fore, True)
+        hand_b = bone(f"hand.{side}", tuple(wrist_bone),
+                      tuple(wrist_bone + hdir * STICK_LEN), fore, True)
+        # Give BOTH hands the same wrist reference frame -- local Z up -- so the
+        # `LIMIT_ROTATION` wrist envelope means the same thing on each side (the
+        # left otherwise inherited a sideways-rolled frame from its forearm, which
+        # offset its local-Euler range ~60 deg from the right's and made a shared
+        # limit clamp its strokes). The stick (bone Y) and its round mesh are
+        # unchanged by this roll.
+        hand_b.align_roll(V((0.0, 0.0, 1.0)))
         # Align the forearm roll so its local Z is the elbow's hinge axis
         # (perpendicular to the rest arm plane); the IK limits below then make
         # the elbow a one-way hinge that cannot twist or bend backwards.
@@ -568,14 +581,12 @@ def _add_targets(coll, arm):
         dt = arm.pose.bones[f"hand.{side}"].constraints.new('DAMPED_TRACK')
         dt.target = empties[f"IK_Hand_{side}"]
         dt.track_axis = 'TRACK_Y'
-        # Wrist: after the stick aims at the tip, optionally clamp the hand's local
-        # rotation to a human wrist envelope. The left hand's local-Euler frame
-        # gimbals through its across-body reaches, so per-axis limits there cannot
-        # tell a normal raised wind-up from a wild pose -- they clamped the lifted
-        # apex and flung the stick sideways -- so the left is left unclamped (its
-        # stick angle is governed upstream by the pitched grip + planed stroke).
-        # The right hand's envelope never actually binds, but is kept as a latent
-        # safety bound. `WRIST_ROT_LIMIT[side] is None` disables the limit.
+        # Wrist: after the stick aims at the tip, clamp the hand's local rotation
+        # to a human wrist envelope. Both hands share the SAME envelope (they are
+        # rolled to the same local-Z-up reference in _build_skeleton), so the limit
+        # is consistent across sides; it is sized to contain the full play range,
+        # so it bounds gross extremes without clamping the strokes (verified: the
+        # bead still tracks its target empty, and the wind-up stays vertical).
         wl = WRIST_ROT_LIMIT[side]
         if wl is not None:
             lr = arm.pose.bones[f"hand.{side}"].constraints.new('LIMIT_ROTATION')

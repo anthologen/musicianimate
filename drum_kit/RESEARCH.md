@@ -177,14 +177,19 @@ hand crossing to the floor tom) fall through to the tip→shoulder pull and tip 
 `|wrist − tip|` stays STICK_LEN throughout, so the tip still lands exactly (verified
 ≤~2 cm both hands). A pole target keeps each elbow low and tucked.
 
-The hand's `LIMIT_ROTATION` wrist envelope (`WRIST_ROT_LIMIT`) is kept **only on the
-right hand**, and even there it never actually binds — the pitched grip and planed
-stroke, not a rotation clamp, are what keep the stick angle natural. On the **left**
-it is **disabled** (`WRIST_ROT_LIMIT["L"] = None`): the left hand's local-Euler frame
-gimbals through its across-body reaches, so per-axis limits there could not tell a
-normal raised wind-up from a wild pose — they clamped the *lifted apex* and flung the
-stick sideways (the bead missing its vertical target empty by up to ~45 cm). With the
-limit off the bead tracks the empty (≤~1.5 cm) and the wind-up is clean and vertical.
+The hand's `LIMIT_ROTATION` wrist envelope (`WRIST_ROT_LIMIT`) is applied on **both
+hands with the same values** (`_WRIST_ENVELOPE`). For that shared limit to mean the
+same thing on each side, both hand bones are first **rolled to the same reference —
+local Z up** (`hand_b.align_roll` in `_build_skeleton`). Without that, the left hand
+inherited a *sideways*-rolled frame from its forearm, so its local-Euler play range
+sat ~60° off the right's; a right-sized limit then clamped the *lifted apex* and flung
+the left stick sideways (the bead missing its vertical target empty by up to ~45 cm).
+With the frames aligned, one envelope — sized to contain the full observed play range
+(wider on Z, where the left's cross-body snare reach twists the wrist most) — bounds
+both hands' gross extremes **without clamping the strokes**: the bead tracks its target
+empty (≤~1.5 cm, i.e. no clamp) and the left wind-up stays vertical (lateral component
+~0). Earlier this limit was disabled on the left as a stopgap; re-conditioning the
+frame let it be restored, consistent with the right.
 
 Even with the left stroke vertical, the left elbow rode into the (slim) chest box —
 first forward on the raised wind-up, then, more subtly, **inboard while idle**: with
@@ -271,12 +276,11 @@ How each maps onto the rig:
   hi-hat — it is caged per side (`use_ik_limit_x/y/z` + min/max) in a human-plausible
   envelope that contains the natural seated + cross-arm motion with margin, blocking
   impossible IK branches (like the old frame-1 over-rotation) without binding play.
-- **Wrist** (hand bone) is aimed at the stick tip by a Damped Track; on the **right**
-  a `LIMIT_ROTATION` in the bone's local space bounds it to a human wrist envelope, but
-  it never binds (the pitched grip + planed stroke keep the pose natural on their own).
-  On the **left** the limit is **removed**: its local-Euler frame gimbals through the
-  across-body reaches, so per-axis caps clamped the raised wind-up and threw the stick
-  sideways instead of catching real extremes (see the stroke section).
+- **Wrist** (hand bone) is aimed at the stick tip by a Damped Track; a `LIMIT_ROTATION`
+  in the bone's local space then bounds it to a human wrist envelope. **Both hands use
+  the same envelope**, made meaningful across sides by first rolling both hand bones to
+  a common local-Z-up reference; it is sized to the full play range so it catches only
+  real extremes and never clamps the (vertical) strokes (see the stroke section).
 
 All limits were verified non-destructive: stick-tip landing accuracy is unchanged
 (median ~1 mm, mean ~4 mm across the strikes) with the limits enabled.
