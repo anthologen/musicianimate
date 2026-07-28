@@ -60,6 +60,26 @@ CONV_PENALTY = 0.6     # metres-equivalent cost for leaving a voice's
                        # convention hand (keeps grooves on the standard grip)
 BUSY_GAP = 0.05        # s; a hand asked to move far within this is flagged
 BUSY_DIST = 0.15       # m of travel that BUSY_GAP cannot physically cover
+# TOMS are flex voices with no convention hand, so without a bias the planner
+# picks purely by travel from the hand's LAST position -- which lets a hand that
+# just played the near side "stick" to a tom across the kit that it then has to
+# reach for across the body (the left hand to the right-side toms is a genuine
+# over-extension past arm+stick length, which the IK can only satisfy by pulling
+# the grip up toward the shoulder -- angling the bead DOWN). Toms sit low in
+# front of the drummer, so a real player splits them down the middle: the LEFT
+# hand takes the drummer's-left toms (+X here), the RIGHT hand the right-side
+# toms (-X). So a tom hit on the far side FOR A HAND pays CROSS_PENALTY per metre
+# past the centreline, enough to overcome ordinary travel savings and keep each
+# stick on its own side. Only the SIDE of the target matters (kit geometry, x=0
+# kick/body centreline), not the body's arm lengths, so striking stays body-
+# agnostic. This is deliberately NOT applied to the crashes: they sit high and
+# overhead, where the right-handed convention crosses the right hand freely over
+# to the drummer's-left cymbals (its hi-hat home is already there), so a side
+# rule would fight the idiomatic cross-over. Fast rolls still alternate (handled
+# before _cost), so this only steers the slower tom fills.
+CROSS_TOMS = {"tom_hi", "tom_mid", "tom_floor"}
+CROSS_PENALTY = 3.0    # metres-equivalent cost per metre a tom hit lies on the
+                       # far side of the kit centre for the assigning hand
 
 # Far-side cymbals: the hi-hat sits at the player's far left, the ride at the
 # far right, so only their convention hand reaches them without the other arm
@@ -107,6 +127,12 @@ def _cost(state, note, hand):
     conv = note["limb"]
     if conv in ("R", "L") and conv != hand:
         c += CONV_PENALTY
+    elif conv is None and note["voice"] in CROSS_TOMS:   # keep each stick on its
+        sx = note["point"][0]                # own side of the kit (+X left / -X right)
+        if hand == "L" and sx < 0.0:
+            c += CROSS_PENALTY * -sx
+        elif hand == "R" and sx > 0.0:
+            c += CROSS_PENALTY * sx
     return c
 
 
