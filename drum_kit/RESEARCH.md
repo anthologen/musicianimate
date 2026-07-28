@@ -81,21 +81,70 @@ These map directly to the planner: convention comes from
 `kit_layout.VOICES[...]['limb']`, alternation is the `FAST_GAP` branch, and
 travel minimisation is a nearest-hand cost with the convention penalty.
 
-## 4. Motion model — wind-up proportional to volume
+## 4. Motion model — the Moeller method (whip + full/down/tap/up strokes)
 
 A real stroke is *anticipation -> contact -> rebound*: the stick lifts to a
 backswing apex, drops to the head at the note onset, and bounces back. Louder
-notes are struck from a **taller backswing dropped faster**. We reuse the
-guitar pick-hand's velocity model:
+notes are struck from a **taller backswing dropped faster** — the velocity model
+we reuse from the guitar pick-hand:
 
     v = velocity / 127
-    lift   = LIFT_MIN + v·(LIFT_MAX − LIFT_MIN)     # apex height above the head
+    lift   = LIFT_MIN + v·(LIFT_MAX − LIFT_MIN)     # accent apex above the head
     strike = STRIKE_SLOW − v·(STRIKE_SLOW − STRIKE_FAST)  # apex→contact seconds
 
-so a hit at velocity 127 winds up ~14 cm and drops in ~45 ms, while a soft hit
-winds up ~3 cm and drifts down over ~120 ms. Between strikes the hand glides
-from one target toward the next, which reads as natural arm travel and honours
-the "minimise movement" heuristic visually.
+But scaling *every* hit's backswing by its own velocity in isolation is not how a
+drummer actually moves. Sanford **Moeller's method** (Chapin's *Speed, Power,
+Control, Endurance*; Moeller's *The Art of Snare Drumming*) — the canonical
+efficiency technique — says a player **doesn't re-lift the stick between every
+note**. Each hit is played as one of two gestures:
+
+- an **accent**: a whole-arm **whip** — the forearm/elbow leads down and the bead
+  *trails then cracks through* (like snapping a whip), the stick reared up high
+  beforehand; or
+- a **tap**: a small **wrist flick** from just above the head.
+
+Crucially, *which gesture, plus what comes next,* sets the stroke's **start and
+end height**, giving Moeller's four canonical strokes (each named for where the
+bead starts→ends):
+
+| this hit | next hit | stroke | backswing → rebound |
+|----------|----------|--------|---------------------|
+| accent | accent | **Full** | high → high |
+| accent | tap    | **Down** | high → low  |
+| tap    | tap    | **Tap**  | low → low   |
+| tap    | accent | **Up**   | low → high  |
+
+So the stick **rears up high only to load an accent** and **rides low through
+taps**, and — the economy the method is prized for — a single up-motion doubles
+as a tap's rebound *and* the next accent's backswing ("two notes for one arm
+movement"). The classic **down→tap→up triple** and **up↔down double** fall
+straight out of the table; no special-casing.
+
+`_moeller_strokes(notes)` implements this per hand. A hit is an **accent** if it
+is loud in absolute terms (`v ≥ ACCENT_ABS ≈ 0.62`) *or* stands out from that
+hand's own **median dynamic** (`ACCENT_REL` louder) — so a flat ghost-note roll
+reads as all taps, a backbeat or the loud half of a crescendo pops as accents,
+and the classification tracks the music rather than a fixed threshold. The
+backswing height is the velocity-scaled accent apex (up to ~20 cm) for an accent
+and a small `TAP_LIFT` (~3 cm) for a tap; the **rebound is set to the *next*
+hit's backswing height** so the two coincide (staying low before a tap, rearing
+up before an accent), easing to a neutral `READY_LIFT` across a rest longer than
+`MOELLER_RESET_GAP`.
+
+The **whip itself** lives in how the wrist empty (the forearm-IK target) is
+keyed relative to the tip empty. On an **accent** the wrist bobs a large fraction
+(`FOREARM_FLEX_ACCENT`) of the apex and, decisively, **drops onto the play anchor
+early** (`WHIP_LEAD` of the way down) so the *arm arrives before the bead* — the
+stick lags and then snaps through at contact, the visual "crack". A **tap** barely
+moves the arm (`FOREARM_FLEX_TAP`, a wrist-only flick) and gets no early lead. In
+both cases the wrist is **exactly on the anchor at contact**, so `|wrist − tip| ==
+STICK_LEN` and the bead still lands on the head (verified: median 7.5 mm across
+both demos — a constant bead-radius offset, i.e. exact — with the sole outlier a
+pre-existing >2-voice simultaneous cluster the *planner* stacks on one hand, not a
+motion error). `_replane_strokes` then re-aims each stroke's now-per-height apex
+and rebound perpendicular to the stick (gravity-aligned, §5) without touching the
+contact key. Between strikes the hand still glides from one target toward the
+next, honouring the "minimise movement" heuristic visually.
 
 Feet follow the same idea: the kick beater cocks **further back when louder**
 before swinging into the batter head (rest −10° -> +6° at contact), and the
@@ -364,6 +413,13 @@ the geometry the IK solves.
   https://www.researchgate.net/publication/228976881_An_animated_virtual_drummer
 - General MIDI percussion key map (notes 35-81).
   https://soundprogramming.net/file-formats/general-midi-drum-note-numbers/
+- The Moeller method (whip motion; Full/Down/Tap/Up strokes; doubles & triples).
+  Sanford A. Moeller, *The Art of Snare Drumming*; Jim Chapin, *Speed, Power,
+  Control, Endurance*.
+  https://en.wikipedia.org/wiki/Moeller_method
+  https://melodics.com/blog/the-moeller-method
+  https://drumhelper.com/learning-drums/moeller-technique-for-drumming/
+  https://www.masterclass.com/articles/the-moeller-method-for-playing-the-drums
 - Cross-arm vs open-handed drumming / hi-hat ergonomics — Modern Drummer,
   Drummer Cafe, Wikipedia "Open-handed drumming".
 - Seated drumming posture (elbows low/tucked, forearms reach, shoulders relaxed):

@@ -9,11 +9,16 @@ drum_kit/build_drum_kit.py:
     IK_Hand_R) through a wind-up -> contact -> rebound stroke to the drum's
     strike point; the drummer's two-bone arm IK reorients the shoulder, elbow
     and stick to reach it, so the swing pivots about the seated drummer's
-    shoulder instead of the stick staying pointed at the audience. Velocity
-    sets the wind-up height and strike speed (loud = a taller, faster stroke),
-    and the motion is authored purely as target areas + velocities, so a
-    different ANTHRO body re-solves the same targets. The vertical axis
-    accelerates into contact and decelerates out of the rebound; travel glides.
+    shoulder instead of the stick staying pointed at the audience. The stroke
+    follows the MOELLER METHOD (see _moeller_strokes): each hit is an accent
+    (a whole-arm whip -- the forearm leads down and the bead trails then cracks
+    through) or a tap (a wrist flick), and the accent/tap of this hit AND the
+    next select the backswing/rebound heights of Moeller's full/down/tap/up
+    strokes, so the stick rears up only to load an accent and rides low through
+    taps. Velocity still scales the accent apex height and strike speed, and the
+    motion is authored purely as target areas + velocities, so a different
+    ANTHRO body re-solves the same targets. The vertical axis accelerates into
+    contact and decelerates out of the rebound; travel glides.
   - Kick (Kick_Beater + Kick_Footboard + foot.R ankle): the beater cocks back
     (further when loud), swings into the batter head at the onset, and
     rebounds; the footboard and the drummer's right ankle stomp in step.
@@ -55,17 +60,34 @@ except ImportError:  # loaded as a loose script via importlib
 
 
 # --- velocity -> motion (louder = taller wind-up, faster strike) -----------
-LIFT_MIN, LIFT_MAX = 0.03, 0.20        # stick apex height above the surface
+LIFT_MIN, LIFT_MAX = 0.03, 0.20        # accent apex height above the surface
 STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
-HOVER = 0.03                            # rebound height above the surface
-# A groove stroke is mostly wrist, but the forearm should visibly join in: the
-# wrist empty (the forearm IK target) bobs through each stroke so the elbow
-# flexes too, taking a fraction of the tip's travel; the REST of the tip's
-# travel comes from the hand pivoting at the wrist (the hand bone tracks the
-# tip target from a wrist that only rose partway, so the remainder is wrist
-# rotation, not elbow bend). Kept just under half so wrist rotation carries
-# slightly more of the stick's height than the elbow does.
-FOREARM_FLEX = 0.45                    # wrist bob as a fraction of the tip lift
+
+# --- Moeller stroke system (accent/tap -> full/down/tap/up strokes) --------
+# Sanford Moeller's method plays each hit as either an ACCENT -- a whole-arm
+# WHIP where the forearm leads down and the bead trails then snaps through, the
+# "crack" -- or a TAP, a small wrist flick. Which one THIS hit is, combined with
+# what the NEXT hit is, selects the stroke's start (backswing) and end (rebound)
+# HEIGHT, giving Moeller's four strokes:
+#   accent->accent = FULL (high->high)   accent->tap = DOWN (high->low)
+#   tap->tap       = TAP  (low->low)     tap->accent = UP   (low->high)
+# So the stick rears up high ONLY to prepare an accent and rides low through
+# taps, and a single up-motion doubles as a tap's rebound AND the next accent's
+# backswing -- the "two notes for one arm movement" economy the method is prized
+# for. The down->tap->up triple and up<->down double fall straight out of this.
+ACCENT_ABS = 0.62          # v>=this (norm) is always an accent (absolute floor)
+ACCENT_REL = 0.18          # ...or this much louder than the hand's median hit
+TAP_LIFT = 0.028           # backswing/rebound height of a low (tap) stroke, m
+READY_LIFT = 0.05          # neutral ready height across rests / lone notes, m
+MOELLER_RESET_GAP = 0.6    # s; a longer gap lets the stick ease back to READY
+# The whip: an accent LEADS with the arm -- the wrist/elbow drops to play height
+# before the bead reaches the head, so the stick trails and then cracks through;
+# a tap is wrist-only. So the forearm bob is large on accents, small on taps,
+# and only accents get the early wrist lead-in.
+FOREARM_FLEX_ACCENT = 0.5              # accent wrist bob, fraction of apex height
+FOREARM_FLEX_TAP = 0.12                # tap wrist bob (mostly a wrist flick)
+WHIP_LEAD = 0.38                       # accent: arm reaches the anchor this
+                                       # fraction of the way early (bead trails)
 
 # --- kick ------------------------------------------------------------------
 BEATER_STRIKE = math.radians(6.0)      # beater angle at contact (into head)
@@ -182,6 +204,47 @@ def _apply_stick_easing(obj, roles):
                 kp.interpolation, kp.easing = 'SINE', 'EASE_IN_OUT'  # smooth glide
 
 
+def _moeller_strokes(notes):
+    """Classify a hand's hits by the Moeller accent/tap system and derive each
+    stroke's backswing (pre) and rebound (post) HEIGHT.
+
+    A hit is an ACCENT if it is loud in absolute terms (>= ACCENT_ABS) or stands
+    out from the hand's own median dynamic (>= ACCENT_REL louder) -- so a flat
+    ghost-note roll is all taps, while a backbeat or the loud end of a crescendo
+    pops as accents. The backswing height is a full velocity-scaled apex for an
+    accent, a small TAP_LIFT for a tap. The rebound preloads the NEXT hit: it
+    lifts to that hit's own backswing height (so the up-motion IS the next
+    stroke's cock), staying low before a tap, rearing up before an accent, and
+    easing to a neutral READY height across a rest. Returns a per-hit list
+    aligned to ``notes`` sorted by start: {accent, pre_h, post_h}."""
+    ns = sorted(notes, key=lambda m: m["start"])
+    if not ns:
+        return []
+    vs = sorted(n["velocity"] for n in ns)
+    baseline = vs[len(vs) // 2] / 127.0            # median hit -> normalized
+    def apex(n):                                   # a full backswing by volume
+        v = _clamp(n["velocity"] / 127.0, 0.0, 1.0)
+        return LIFT_MIN + v * (LIFT_MAX - LIFT_MIN)
+    def is_accent(n):
+        v = n["velocity"] / 127.0
+        return v >= ACCENT_ABS or (v - baseline) >= ACCENT_REL
+    acc = [is_accent(n) for n in ns]
+
+    def pre_of(i):
+        return apex(ns[i]) if acc[i] else TAP_LIFT
+
+    out = []
+    for i, n in enumerate(ns):
+        pre_h = pre_of(i)
+        if i + 1 < len(ns):
+            gap = ns[i + 1]["start"] - n["start"]
+            post_h = READY_LIFT if gap > MOELLER_RESET_GAP else pre_of(i + 1)
+        else:
+            post_h = READY_LIFT                    # phrase end: ease to ready
+        out.append({"accent": acc[i], "pre_h": pre_h, "post_h": post_h})
+    return out
+
+
 def _animate_arm(target, wrist, side, notes, fps, frame_start):
     """Drive a hand's stick-tip empty (`target`) and its wrist empty so the
     stroke comes from the WRIST, not the whole arm.
@@ -205,8 +268,9 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     tframe = _monotonic(fps, frame_start)   # tip empty (3 keys/hit)
     wframe = _monotonic(fps, frame_start)   # wrist empty (1 key/hit -> holds)
     roles = []
-    strokes = []                            # (apex_f, contact_f, rebound_f, p, lift, anchor)
+    strokes = []                # (apex_f, contact_f, rebound_f, p, pre_h, post_h, anchor)
     last = frame_start
+    cls = _moeller_strokes(notes)
 
     rest = _rest_tip(side)
     target.location = rest
@@ -229,7 +293,7 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         wrist.keyframe_insert(data_path="location", frame=wframe(t))
 
     prev_t = None
-    for n in sorted(notes, key=lambda m: m["start"]):
+    for idx, n in enumerate(sorted(notes, key=lambda m: m["start"])):
         t = n["start"]
         p = mathutils.Vector((n["x"], n["y"], n["z"]))
         v = max(0.0, min(1.0, n["velocity"] / 127.0))
@@ -237,25 +301,35 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         # Rapid hits get a shorter wind-up so the tip stays near the drum
         # instead of flinging up and darting between poses.
         busy = _clamp(gap / 0.30, 0.4, 1.0)
-        lift = (LIFT_MIN + v * (LIFT_MAX - LIFT_MIN)) * busy
+        # Moeller: the backswing (pre_h) and rebound (post_h) heights come from
+        # the accent/tap stroke type, not from this note's velocity alone -- an
+        # accent rears up high, a tap barely lifts, and the rebound is set to the
+        # NEXT hit's backswing so one up-motion serves both.
+        accent = cls[idx]["accent"]
+        pre_h = cls[idx]["pre_h"] * busy
+        post_h = cls[idx]["post_h"] * busy
         strike = STRIKE_SLOW - v * (STRIKE_SLOW - STRIKE_FAST)
         down = min(strike, 0.40 * gap)    # apex->contact; never precede the last hit
         up = min(0.07, 0.45 * gap)        # contact->rebound
 
-        # Arm: the wrist holds at play height but bobs a little through the
-        # stroke so the forearm/elbow joins in -- cocking up with the wind-up
-        # then dropping back onto the anchor at contact. The bob is a fraction of
-        # the tip lift, so the wrist/hand still leads and the elbow only assists.
+        # Arm: on an accent the forearm/elbow WHIPS -- it cocks up with the
+        # backswing, then drops to the anchor EARLY (WHIP_LEAD) so the arm leads
+        # and the bead trails before snapping through, and it bobs a large
+        # fraction of the stroke. On a tap the arm barely moves (a wrist flick).
+        # It always sits back exactly on the anchor at contact, so
+        # |wrist - tip| == STICK_LEN and the bead still lands on the head.
         anchor = mathutils.Vector(wrist_target(sh, p, stick_pitch(n["voice"])))
-        flex = FOREARM_FLEX * lift
-        key_wrist(t - down, anchor + mathutils.Vector((0.0, 0.0, flex)))   # elbow cocks up
-        key_wrist(t, anchor)                                               # onto the head
-        key_wrist(t + up, anchor + mathutils.Vector((0.0, 0.0, FOREARM_FLEX * HOVER)))
-        af = key_tip(t - down, p + mathutils.Vector((0.0, 0.0, lift)), "apex")  # cocks up
-        cf = key_tip(t, p, "contact")                                          # onto the head
-        rf = key_tip(t + up, p + mathutils.Vector((0.0, 0.0, HOVER)), "rebound")
+        flex = FOREARM_FLEX_ACCENT if accent else FOREARM_FLEX_TAP
+        key_wrist(t - down, anchor + mathutils.Vector((0.0, 0.0, flex * pre_h)))  # cock up
+        if accent:
+            key_wrist(t - down * (1.0 - WHIP_LEAD), anchor)   # arm whips down first
+        key_wrist(t, anchor)                                  # settled onto the head
+        key_wrist(t + up, anchor + mathutils.Vector((0.0, 0.0, flex * post_h)))
+        af = key_tip(t - down, p + mathutils.Vector((0.0, 0.0, pre_h)), "apex")  # cocks up
+        cf = key_tip(t, p, "contact")                                           # onto the head
+        rf = key_tip(t + up, p + mathutils.Vector((0.0, 0.0, post_h)), "rebound")
         last = rf
-        strokes.append((af, cf, rf, p.copy(), lift, anchor.copy()))
+        strokes.append((af, cf, rf, p.copy(), pre_h, post_h, anchor.copy()))
         prev_t = t
 
     _apply_stick_easing(target, roles)
@@ -301,15 +375,15 @@ def _replane_strokes(target, side, strokes):
             fc.update()
 
     z = mathutils.Vector((0.0, 0.0, 1.0))
-    for af, cf, rf, p, lift, anchor in strokes:
+    for af, cf, rf, p, pre_h, post_h, anchor in strokes:
         stick = p - anchor                            # wrist -> bead (contact)
         if stick.length < 1e-6:
             continue
         stick.normalize()
         lift_dir = z - z.dot(stick) * stick           # up, perpendicular to stick
         lift_dir = lift_dir.normalized() if lift_dir.length > 1e-6 else z
-        set_key(af, p + lift * lift_dir)
-        set_key(rf, p + HOVER * lift_dir)
+        set_key(af, p + pre_h * lift_dir)             # Moeller backswing height
+        set_key(rf, p + post_h * lift_dir)            # rebound = next stroke's cock
 
 
 def _key_ankle(arm, bone, frame_fn):
