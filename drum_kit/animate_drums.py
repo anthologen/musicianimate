@@ -133,6 +133,15 @@ REACH_NEAR = 0.34                      # forward reach (m) at/below which: uprig
 REACH_FAR = 0.72                       # forward reach (m) at which the lean is full
 TORSO_SAMPLE = 0.18                    # seconds between torso keyframes
 TORSO_WIN = 0.35                       # smoothing window for the activity centre
+# The lean must COMMIT: a run of reaches to the same far target (e.g. the crash
+# struck once a beat) leaves the ±TORSO_WIN activity window empty in the gaps
+# between hits, which would sag the torso back to upright and then forward again
+# on every stroke -- a random-looking bob unrelated to the beat. So the sampled
+# lean is morphologically CLOSED over ±LEAN_HOLD seconds: dips shorter than
+# 2*LEAN_HOLD (the gaps between reaches of one passage) are filled so the lean is
+# held for the whole passage, while a gap wider than that (the reaching has truly
+# stopped -- a lone crash bars later) still releases the drummer to upright.
+LEAN_HOLD = 0.85
 
 # --- cymbal wobble ---------------------------------------------------------
 WOBBLE_MIN, WOBBLE_MAX = 0.02, 0.09    # rad of tip wobble
@@ -539,11 +548,28 @@ def _animate_cymbal(obj, notes, fps, frame_start):
         key(t + WOBBLE_SETTLE, rest[0])             # settle
 
 
+def _time_closing(times, vals, radius):
+    """Morphological CLOSING of a time series: dilate (max) then erode (min), each
+    over a ±`radius`-second window about every sample. Fills short dips BETWEEN
+    peaks -- so a value held across a run of closely spaced peaks stops sagging in
+    the gaps -- while leaving wider gaps, and the outer edges of a run, where they
+    are. `times` must be ascending."""
+    def sweep(src, op):
+        out = []
+        for ti in times:
+            lo, hi = ti - radius, ti + radius
+            out.append(op(v for v, tj in zip(src, times) if lo <= tj <= hi))
+        return out
+    return sweep(sweep(vals, max), min)
+
+
 def _animate_torso(arm, stick_notes, fps, frame_start):
     """Twist and lean the spine toward the centre of what the hands are
     playing. The spine's local Y twists the upper body (left/right), local X
     leans it forward; sampling a smoothed activity centre and SINE-easing the
-    keyframes gives natural acceleration and deceleration."""
+    keyframes gives natural acceleration and deceleration. The lean is then
+    COMMITTED across a reaching passage (see LEAN_HOLD) so it holds steady while
+    the hands keep reaching out instead of bobbing back on every stroke."""
     if "spine" not in arm.pose.bones:
         return frame_start
     sp = arm.pose.bones["spine"]
@@ -577,7 +603,8 @@ def _animate_torso(arm, stick_notes, fps, frame_start):
                 sum(n["y"] * x for n, x in ws) / w)
 
     t, t_end = notes[0]["start"], notes[-1]["start"]
-    last = frame_start
+    # Pass 1: sample the raw per-frame twist and lean demand.
+    times, twists, leans = [], [], []
     while t <= t_end + 1e-6:
         # Face the midpoint of where the TWO hands are, weighting each hand equally
         # (not each note): so a split ride-right + snare-left groove compromises
@@ -615,11 +642,21 @@ def _animate_torso(arm, stick_notes, fps, frame_start):
                                        0.0, 1.0)
         else:
             twist, lean = 0.0, 0.0                              # idle -> seated baseline
-        f = frame(t)
-        sp.rotation_euler = (lean, twist, 0.0)
+        times.append(t)
+        twists.append(twist)
+        leans.append(lean)
+        t += TORSO_SAMPLE
+
+    # Pass 2: commit the lean over each reaching passage, then keyframe. The raw
+    # lean spikes once per reach and sags to upright in the (noteless) gaps
+    # between strokes -- closing it holds the lean while the reaching continues.
+    leans = _time_closing(times, leans, LEAN_HOLD)
+    last = frame_start
+    for tt, tw, ln in zip(times, twists, leans):
+        f = frame(tt)
+        sp.rotation_euler = (ln, tw, 0.0)
         arm.keyframe_insert(data_path=path, frame=f)
         last = f
-        t += TORSO_SAMPLE
     return last
 
 
