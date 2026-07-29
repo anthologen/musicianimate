@@ -277,20 +277,45 @@ WRIST_DIR = mathutils.Vector((0.0, 0.94, 0.34)).normalized()
 WRIST_BACK = 0.3
 
 # Stick attitude (pitch of the shaft, grip->tip, above horizontal). Two regimes:
-#   - Flat drums played by looking straight down at them (snare, floor tom): the
-#     stick sits nearly LEVEL, angled just slightly down, hovering over the head.
-#   - Everything else (rack toms, hats, ride, crashes): the bead points UP. It is
-#     more ergonomic reaching up/across to them, and a real strike's rebound flicks
-#     the tip back up -- captured here as an up-pitched rest the wrist rotates from.
+#   - Drums struck from above (snare, and the toms): the stick sits nearly LEVEL,
+#     angled just slightly DOWN, hovering over the head. The bead-up grip would
+#     otherwise place the wrist a stick-length BELOW and behind the head -- fine
+#     for a cymbal out in the open, but the rack toms are mounted high with their
+#     shells right under the head, so that low grip drives the shaft straight
+#     THROUGH the tom shell to reach the tip on top (Tom2 was skewered ~0.09 m
+#     deep at the mid-tom contact). Pitching the stick slightly down instead lifts
+#     the grip to just above the tom's rim so the shaft clears the shell; the bead
+#     points a little downward only at the moment of the strike, which is fine.
+#   - Open cymbals reached up/across (hats, crashes): the bead points UP. It is
+#     more ergonomic, the hand rides LOW with the stick angled up to the cymbal
+#     (not hovering above and tapping down), and a real strike's rebound flicks the
+#     tip back up -- captured here as an up-pitched rest the wrist rotates from.
+#   - The RIDE wants that same low-hand/stick-up look, but it is a big, nearly flat
+#     disc and its bow is struck INBOARD (not out in the open), so a full +28 deg
+#     up-pitch drops the grip so far below the bead that the shaft rakes UP UNDER
+#     the tilted disc's low near lip to reach the bow (it dove ~0.056 m under). The
+#     disc physically overhangs a steep upstroke. The steepest up-pitch whose shaft
+#     still CLEARS the ride while keeping the hand below the bead is ~+10 deg, so
+#     the ride gets its own shallower bead-up attitude rather than the crash's +28.
 STICK_PITCH_FLAT = math.radians(-8.0)
 STICK_PITCH_UP = math.radians(28.0)
-# Voices played flat (from above). All other voices get the bead-up attitude.
-FLAT_VOICES = {"snare", "side_stick", "tom_floor"}
+STICK_PITCH_RIDE = math.radians(10.0)   # bead-up but shallow: hand below the bead,
+                                        # yet the shaft clears the flat ride disc
+# Voices played from above (slightly bead-down): the snare and the toms, so their
+# grips ride above the shell instead of the up-pitched stick clipping through it.
+FLAT_VOICES = {"snare", "side_stick", "tom_floor", "tom_mid", "tom_hi"}
+# The ride bow/bell: a low-hand bead-up stroke, but shallow so the shaft clears the
+# overhanging disc (see above). Everything else open gets the full bead-up pitch.
+RIDE_VOICES = {"ride", "ride_bell"}
 
 
 def stick_pitch(voice):
     """Desired stick pitch (rad, grip->tip above horizontal) for a voice."""
-    return STICK_PITCH_FLAT if voice in FLAT_VOICES else STICK_PITCH_UP
+    if voice in FLAT_VOICES:
+        return STICK_PITCH_FLAT
+    if voice in RIDE_VOICES:
+        return STICK_PITCH_RIDE
+    return STICK_PITCH_UP
 
 
 def home_voice(side):

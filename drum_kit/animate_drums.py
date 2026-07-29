@@ -63,7 +63,7 @@ except ImportError:  # loaded as a loose script via importlib
 
 
 # --- velocity -> motion (louder = taller wind-up, faster strike) -----------
-LIFT_MIN, LIFT_MAX = 0.03, 0.20        # accent apex height above the surface
+LIFT_MIN, LIFT_MAX = 0.03, 0.30        # accent apex height above the surface
 STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
 
 # --- Moeller stroke system (accent/tap backswing heights) ------------------
@@ -86,14 +86,31 @@ STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
 ACCENT_ABS = 0.62          # v>=this (norm) is always an accent (absolute floor)
 ACCENT_REL = 0.18          # ...or this much louder than the hand's median hit
 TAP_LIFT = 0.028           # backswing height of a low (tap) stroke, m
-READY_LIFT = 0.05          # neutral ready height eased to across a real rest, m
-REBOUND_MIN, REBOUND_MAX = 0.012, 0.04  # small bounce off the head (soft->loud)
-MOELLER_RESET_GAP = 0.6    # s; a longer gap is a real rest -> settle to READY
+REBOUND_MIN, REBOUND_MAX = 0.018, 0.065  # small bounce off the head (soft->loud)
+MOELLER_RESET_GAP = 0.6    # s; a longer gap is a real rest -> return the hand home
+# A real rest is not a slow-motion drift across the kit. When the gap to the next
+# hit is a genuine rest (rest_after), the idle hand pulls back to its NEUTRAL HOME
+# (the _rest_tip over its convention voice, close to the body) shortly after the
+# last stroke, HOLDS there, and only leaves to approach the next drum a short beat
+# before that hit's windup -- rather than SINE-gliding straight from one drum to
+# the next across the whole empty gap. Crucially the home pull only happens when
+# the neighbouring hit is on a DIFFERENT spot: repeated hits on the SAME drum (a
+# crash ridden once a bar) keep the hand poised over it and merely bob for each
+# windup, instead of pumping all the way back to the body between identical strokes.
+HOME_SETTLE = 0.30         # s; ease the idle hand back to home after a rest-ending hit
+HOME_APPROACH = 0.34       # s; leave home this long before the next hit's windup
+SAME_SPOT = 0.06           # m; hits closer than this count as the same drum (no home pull)
 # The whip: an accent LEADS with the arm -- the wrist/elbow drops to play height
 # before the bead reaches the head, so the stick trails and then cracks through;
-# a tap is wrist-only. So the forearm bob is large on accents, small on taps,
+# a tap is wrist-only. So the forearm bob is present on accents, small on taps,
 # and only accents get the early wrist lead-in.
-FOREARM_FLEX_ACCENT = 0.5              # accent wrist bob, fraction of apex height
+#
+# The forearm bob raises the WRIST empty by this fraction of the tip's apex; the
+# hand bone then ROTATES at the wrist to cover the remaining (1-flex) of the
+# rise. So a smaller fraction means the arm heaves less and the WRIST FLICK
+# supplies more of the height the bead reaches -- the raised stick reads as a
+# wrist whip rather than a whole-arm lift.
+FOREARM_FLEX_ACCENT = 0.3              # accent forearm bob, fraction of apex height
 FOREARM_FLEX_TAP = 0.12                # tap wrist bob (mostly a wrist flick)
 WHIP_LEAD = 0.38                       # accent: arm reaches the anchor this
                                        # fraction of the way early (bead trails)
@@ -151,6 +168,13 @@ TORSO_WIN = 0.35                       # smoothing window for the activity centr
 # held for the whole passage, while a gap wider than that (the reaching has truly
 # stopped -- a lone crash bars later) still releases the drummer to upright.
 LEAN_HOLD = 0.85
+# The twist (the gaze/facing) needs the same steadying, but it is BIDIRECTIONAL --
+# it swings left AND right -- so closing (which only fills dips toward a peak) does
+# not fit. Instead the sampled twist is MOVING-AVERAGED over ±TWIST_SMOOTH seconds:
+# a hand briefly idling between hits (which jumps the activity centre to the other
+# hand and whips the head back and forth) is averaged out, so the gaze holds on the
+# centre of a passage and turns only when the activity genuinely, sustainedly moves.
+TWIST_SMOOTH = 0.6
 
 # --- cymbal wobble ---------------------------------------------------------
 WOBBLE_MIN, WOBBLE_MAX = 0.02, 0.09    # rad of tip wobble
@@ -236,8 +260,8 @@ def _moeller_strokes(notes):
     instead each stroke reaches its peak just before its downswing (see
     _animate_arm), so the next hit's cock IS the continuous rise out of this
     hit's small rebound. ``rest_after`` marks a gap long enough to be a genuine
-    rest, where the stick settles to a neutral READY height instead. Returns a
-    per-hit list aligned to ``notes`` sorted by start: {accent, pre_h,
+    rest, where the hand instead pulls back to its neutral home (see _animate_arm).
+    Returns a per-hit list aligned to ``notes`` sorted by start: {accent, pre_h,
     rebound, rest_after}."""
     ns = sorted(notes, key=lambda m: m["start"])
     if not ns:
@@ -293,11 +317,13 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     cls = _moeller_strokes(notes)
 
     rest = _rest_tip(side)
+    tip_home = mathutils.Vector(rest)
+    wrist_home = mathutils.Vector(wrist_target(sh, rest, stick_pitch(home_voice(side))))
     target.location = rest
     target.keyframe_insert(data_path="location", frame=float(frame_start))
     roles.append((float(frame_start), "rest"))
     tframe(0.0)
-    wrist.location = wrist_target(sh, rest, stick_pitch(home_voice(side)))
+    wrist.location = wrist_home
     wrist.keyframe_insert(data_path="location", frame=float(frame_start))
     wframe(0.0)
 
@@ -312,8 +338,9 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         wrist.location = loc
         wrist.keyframe_insert(data_path="location", frame=wframe(t))
 
+    ns = sorted(notes, key=lambda m: m["start"])
     prev_t = None
-    for idx, n in enumerate(sorted(notes, key=lambda m: m["start"])):
+    for idx, n in enumerate(ns):
         t = n["start"]
         p = mathutils.Vector((n["x"], n["y"], n["z"]))
         v = max(0.0, min(1.0, n["velocity"] / 127.0))
@@ -326,14 +353,32 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         # apex is placed just before the downswing (t - down) so the stick is
         # still RISING right up to it; after contact it takes only a small bounce
         # (post_h) and then climbs continuously into the NEXT hit's apex, so it is
-        # never suspended at the top. A genuine rest instead settles to READY.
+        # never suspended at the top. A genuine rest instead pulls the hand HOME.
         accent = cls[idx]["accent"]
         pre_h = cls[idx]["pre_h"] * busy
-        post_h = (READY_LIFT if cls[idx]["rest_after"]
-                  else cls[idx]["rebound"]) * busy
+        post_h = cls[idx]["rebound"] * busy
         strike = STRIKE_SLOW - v * (STRIKE_SLOW - STRIKE_FAST)
         down = min(strike, 0.40 * gap)    # apex->contact; never precede the last hit
         up = min(0.07, 0.45 * gap)        # contact->rebound
+        # A rest before this hit (or the opening rest) means the hand is parked at
+        # its neutral home; it stays there and only travels out to the drum a beat
+        # (HOME_APPROACH, clamped to the gap) before the windup rather than drifting
+        # across the whole gap. A rest AFTER this hit brings the hand back home.
+        # But only when the OTHER hit is on a different spot -- a rest spent
+        # repeating the SAME drum keeps the hand out over it (see SAME_SPOT), so a
+        # crash ridden once a bar bobs in place instead of retracting every stroke.
+        same_prev = idx > 0 and (mathutils.Vector(
+            (ns[idx - 1]["x"], ns[idx - 1]["y"], ns[idx - 1]["z"])) - p).length < SAME_SPOT
+        same_next = idx + 1 < len(ns) and (mathutils.Vector(
+            (ns[idx + 1]["x"], ns[idx + 1]["y"], ns[idx + 1]["z"])) - p).length < SAME_SPOT
+        rested_before = idx == 0 or (cls[idx - 1]["rest_after"] and not same_prev)
+        rest_after = cls[idx]["rest_after"] and not same_next
+        next_gap = (ns[idx + 1]["start"] - t) if idx + 1 < len(ns) else 2.0 * HOME_SETTLE
+
+        if rested_before:
+            approach = min(HOME_APPROACH, 0.5 * gap)
+            key_tip(t - down - approach, tip_home, "home")   # hold home, then approach
+            key_wrist(t - down - approach, wrist_home)
 
         # Arm: on an accent the forearm/elbow WHIPS -- it cocks up with the
         # backswing, then drops to the anchor EARLY (WHIP_LEAD) so the arm leads
@@ -353,6 +398,11 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         rf = key_tip(t + up, p + mathutils.Vector((0.0, 0.0, post_h)), "rebound")
         last = rf
         strokes.append((af, cf, rf, p.copy(), pre_h, post_h, anchor.copy()))
+
+        if rest_after:
+            settle = min(HOME_SETTLE, 0.4 * next_gap)
+            last = key_tip(t + up + settle, tip_home, "home")   # pull back to neutral
+            key_wrist(t + up + settle, wrist_home)
         prev_t = t
 
     _apply_stick_easing(target, roles)
@@ -577,6 +627,19 @@ def _time_closing(times, vals, radius):
     return sweep(sweep(vals, max), min)
 
 
+def _time_smooth(times, vals, radius):
+    """Moving-average of a time series over a ±`radius`-second window about every
+    sample. Damps rapid back-and-forth (a bidirectional signal) without shifting a
+    sustained level, so a value that genuinely moves still follows. `times` must be
+    ascending."""
+    out = []
+    for ti in times:
+        lo, hi = ti - radius, ti + radius
+        win = [v for v, tj in zip(vals, times) if lo <= tj <= hi]
+        out.append(sum(win) / len(win))
+    return out
+
+
 def _animate_torso(arm, stick_notes, fps, frame_start):
     """Twist and lean the spine toward the centre of what the hands are
     playing. The spine's local Y twists the upper body (left/right), local X
@@ -665,6 +728,7 @@ def _animate_torso(arm, stick_notes, fps, frame_start):
     # lean spikes once per reach and sags to upright in the (noteless) gaps
     # between strokes -- closing it holds the lean while the reaching continues.
     leans = _time_closing(times, leans, LEAN_HOLD)
+    twists = _time_smooth(times, twists, TWIST_SMOOTH)
     last = frame_start
     for tt, tw, ln in zip(times, twists, leans):
         f = frame(tt)

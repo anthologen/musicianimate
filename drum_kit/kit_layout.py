@@ -115,7 +115,15 @@ def _build_voices():
     t1, t2, ft = TOMS[0], TOMS[1], TOMS[2]
     _, sd, sp, sc, st = SNARE
     snare_pt = _head_center(sd, sp, sc, st)
-    crash_pt = _cymbal_bow_point(CRASH[1], CRASH[2], CRASH[3])
+    # A crash is struck out on the EDGE (frac ~0.85), not mid-bow: that is real
+    # crash technique (a glancing edge hit), and it also lets the natural steep
+    # bead-up crash stroke clear the disc. Struck mid-bow (frac 0.5) the low grip
+    # of a +28 deg up-pitched stick rakes the shaft ~0.058 m DOWN THROUGH the
+    # tilted disc to reach the tip inboard; landing the bead near the rim instead
+    # puts the whole shaft out over open air (see build_drummer stick_pitch). The
+    # ride is different -- it is a bow instrument, so it keeps its mid-bow strike
+    # and clears via a shallower pitch instead.
+    crash_pt = _cymbal_bow_point(CRASH[1], CRASH[2], CRASH[3], frac=0.85)
     ride_pt = _cymbal_bow_point(RIDE[1], RIDE[2], RIDE[3])
     hat_pt = _hihat_point()
 
