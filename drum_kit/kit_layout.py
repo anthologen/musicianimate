@@ -45,7 +45,7 @@ TOMS = [
 SNARE = ("Snare", 14, 5.5, (0.24, 0.40, 0.57), -6.0)   # in front of the kick
 
 # (name, dia_in, center, tilt_deg, stand_base_xy) -- cymbals on boom stands.
-CRASH = ("Crash", 16, (0.40, -0.10, 1.15), -16.0, (0.58, -0.46))
+CRASH = ("Crash", 16, (0.40, 0.00, 1.15), -16.0, (0.58, -0.46))   # pulled in toward the drummer (+Y)
 RIDE = ("Ride", 20, (-0.46, 0.06, 1.02), -14.0, (-0.68, -0.44))
 HIHAT_DIA = 14
 HIHAT_CENTER = (0.55, 0.32, 0.86)   # ~34" at the cymbals, just above snare
