@@ -89,14 +89,22 @@ POSE = {
     "shoulder_y": 0.72, "shoulder_z": 1.20,
     # Knees are solved from the anthropometric thigh/shin lengths (see
     # _solve_knee), so only the hip and the pedal-planted ankles are fixed here.
-    "ankle_R":    (0.0, 0.42, 0.10),   # over the kick footboard
-    "ankle_L":    (0.55, 0.48, 0.10),  # over the hi-hat footboard
+    # The feet rest with the BALL of the foot on the pedal, sat BACK from the very
+    # toe of each footboard (+Y, toward the drummer, and -- on the yawed hi-hat
+    # pedal -- along the board's heading). Planting the toe right at the front of
+    # the board jammed each shoe into the pedal linkage that lives there: the right
+    # toe box was skewered by the kick beater (its rod cocks back over the board),
+    # and the left toe sat inside the hi-hat stand post / pull-rod / near leg. Both
+    # boards are long enough (0.24 m) that the foot still sits on the board here.
+    "ankle_R":    (0.0, 0.50, 0.10),   # ball of foot on the kick footboard
+    "ankle_L":    (0.505, 0.558, 0.10),  # ball of foot on the hi-hat footboard
     # Toes rest HIGHER than the ankles so the foot slopes up toward the toe,
     # sitting flush on the up-sloped pedal footboards (see PEDAL_SLOPE). The left
-    # toe aims straight at the hi-hat stand centre (0.55, 0.32) so foot + pedal
-    # line up with the stand.
-    "toe_R":      (0.0, 0.24, 0.145),
-    "toe_L":      (0.55, 0.32, 0.145),
+    # toe/ankle are shifted back ALONG the yawed hi-hat pedal heading (-X, +Y from
+    # the stand centre) so the foot stays aligned on the board while clearing the
+    # stand base at the front.
+    "toe_R":      (0.0, 0.32, 0.145),
+    "toe_L":      (0.505, 0.398, 0.145),
     "throne":     (0.0, 0.90, 0.57),
     # Elbow pole targets. Real drummers keep the elbows LOW and TUCKED to the
     # sides, reaching with the forearm/wrist rather than lifting or winging the
