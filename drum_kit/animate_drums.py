@@ -12,13 +12,16 @@ drum_kit/build_drum_kit.py:
     shoulder instead of the stick staying pointed at the audience. The stroke
     follows the MOELLER METHOD (see _moeller_strokes): each hit is an accent
     (a whole-arm whip -- the forearm leads down and the bead trails then cracks
-    through) or a tap (a wrist flick), and the accent/tap of this hit AND the
-    next select the backswing/rebound heights of Moeller's full/down/tap/up
-    strokes, so the stick rears up only to load an accent and rides low through
-    taps. Velocity still scales the accent apex height and strike speed, and the
-    motion is authored purely as target areas + velocities, so a different
-    ANTHRO body re-solves the same targets. The vertical axis accelerates into
-    contact and decelerates out of the rebound; travel glides.
+    through) or a tap (a wrist flick), which sets that hit's backswing height so
+    the stick rears up only to load an accent and rides low through taps.
+    Velocity scales the accent apex height and strike speed. Each windup PEAKS
+    just before its own downswing rather than snapping up early and hovering:
+    after contact the stick takes only a small bounce and then climbs
+    continuously into the next hit's apex, so it is always winding up or
+    striking, never held still at the top. The motion is authored purely as
+    target areas + velocities, so a different ANTHRO body re-solves the same
+    targets. The vertical axis accelerates into contact and decelerates out of
+    the rebound; travel glides.
   - Kick (Kick_Beater + Kick_Footboard + foot.R ankle): the beater cocks back
     (further when loud), swings into the batter head at the onset, and
     rebounds; the footboard and the drummer's right ankle stomp in step.
@@ -63,23 +66,29 @@ except ImportError:  # loaded as a loose script via importlib
 LIFT_MIN, LIFT_MAX = 0.03, 0.20        # accent apex height above the surface
 STRIKE_SLOW, STRIKE_FAST = 0.12, 0.045  # apex->contact seconds (soft -> loud)
 
-# --- Moeller stroke system (accent/tap -> full/down/tap/up strokes) --------
+# --- Moeller stroke system (accent/tap backswing heights) ------------------
 # Sanford Moeller's method plays each hit as either an ACCENT -- a whole-arm
 # WHIP where the forearm leads down and the bead trails then snaps through, the
-# "crack" -- or a TAP, a small wrist flick. Which one THIS hit is, combined with
-# what the NEXT hit is, selects the stroke's start (backswing) and end (rebound)
-# HEIGHT, giving Moeller's four strokes:
-#   accent->accent = FULL (high->high)   accent->tap = DOWN (high->low)
-#   tap->tap       = TAP  (low->low)     tap->accent = UP   (low->high)
-# So the stick rears up high ONLY to prepare an accent and rides low through
-# taps, and a single up-motion doubles as a tap's rebound AND the next accent's
-# backswing -- the "two notes for one arm movement" economy the method is prized
-# for. The down->tap->up triple and up<->down double fall straight out of this.
+# "crack" -- or a TAP, a small wrist flick. Which one THIS hit is (plus its
+# velocity) sets its BACKSWING HEIGHT: an accent rears up to a full,
+# velocity-scaled apex, a tap barely lifts. So the stick rides low through a
+# ghost-note roll and rears up only to load an accent (Moeller's down/tap/up
+# shaping falls out of neighbouring hits simply having different heights).
+#
+# Crucially the windup is TIMED, not held: each stroke rises to peak exactly at
+# the top of its own backswing just before the downswing, so between two hits
+# the stick is always either winding up or swinging down -- never suspended at
+# the top. After contact it takes only a small physical BOUNCE off the head and
+# then immediately begins the next windup, a single continuous rise that arrives
+# at the top just in time ("two notes for one arm movement", but never a hover).
+# Because the peak right before a strike is that strike's OWN apex, the windup
+# height tracks the note's volume: loud = high, soft = low.
 ACCENT_ABS = 0.62          # v>=this (norm) is always an accent (absolute floor)
 ACCENT_REL = 0.18          # ...or this much louder than the hand's median hit
-TAP_LIFT = 0.028           # backswing/rebound height of a low (tap) stroke, m
-READY_LIFT = 0.05          # neutral ready height across rests / lone notes, m
-MOELLER_RESET_GAP = 0.6    # s; a longer gap lets the stick ease back to READY
+TAP_LIFT = 0.028           # backswing height of a low (tap) stroke, m
+READY_LIFT = 0.05          # neutral ready height eased to across a real rest, m
+REBOUND_MIN, REBOUND_MAX = 0.012, 0.04  # small bounce off the head (soft->loud)
+MOELLER_RESET_GAP = 0.6    # s; a longer gap is a real rest -> settle to READY
 # The whip: an accent LEADS with the arm -- the wrist/elbow drops to play height
 # before the bead reaches the head, so the stick trails and then cracks through;
 # a tap is wrist-only. So the forearm bob is large on accents, small on taps,
@@ -215,17 +224,21 @@ def _apply_stick_easing(obj, roles):
 
 def _moeller_strokes(notes):
     """Classify a hand's hits by the Moeller accent/tap system and derive each
-    stroke's backswing (pre) and rebound (post) HEIGHT.
+    stroke's backswing HEIGHT plus its post-strike behaviour.
 
     A hit is an ACCENT if it is loud in absolute terms (>= ACCENT_ABS) or stands
     out from the hand's own median dynamic (>= ACCENT_REL louder) -- so a flat
     ghost-note roll is all taps, while a backbeat or the loud end of a crescendo
-    pops as accents. The backswing height is a full velocity-scaled apex for an
-    accent, a small TAP_LIFT for a tap. The rebound preloads the NEXT hit: it
-    lifts to that hit's own backswing height (so the up-motion IS the next
-    stroke's cock), staying low before a tap, rearing up before an accent, and
-    easing to a neutral READY height across a rest. Returns a per-hit list
-    aligned to ``notes`` sorted by start: {accent, pre_h, post_h}."""
+    pops as accents. The backswing height (``pre_h``) is a full velocity-scaled
+    apex for an accent, a small TAP_LIFT for a tap: each stroke rears up to its
+    OWN height, so the windup a viewer sees before a strike tracks that note's
+    volume. The stick does not preload the next hit's height and then wait --
+    instead each stroke reaches its peak just before its downswing (see
+    _animate_arm), so the next hit's cock IS the continuous rise out of this
+    hit's small rebound. ``rest_after`` marks a gap long enough to be a genuine
+    rest, where the stick settles to a neutral READY height instead. Returns a
+    per-hit list aligned to ``notes`` sorted by start: {accent, pre_h,
+    rebound, rest_after}."""
     ns = sorted(notes, key=lambda m: m["start"])
     if not ns:
         return []
@@ -237,20 +250,18 @@ def _moeller_strokes(notes):
     def is_accent(n):
         v = n["velocity"] / 127.0
         return v >= ACCENT_ABS or (v - baseline) >= ACCENT_REL
+    def bounce(n):                                 # small velocity-scaled bounce
+        v = _clamp(n["velocity"] / 127.0, 0.0, 1.0)
+        return REBOUND_MIN + v * (REBOUND_MAX - REBOUND_MIN)
     acc = [is_accent(n) for n in ns]
-
-    def pre_of(i):
-        return apex(ns[i]) if acc[i] else TAP_LIFT
 
     out = []
     for i, n in enumerate(ns):
-        pre_h = pre_of(i)
-        if i + 1 < len(ns):
-            gap = ns[i + 1]["start"] - n["start"]
-            post_h = READY_LIFT if gap > MOELLER_RESET_GAP else pre_of(i + 1)
-        else:
-            post_h = READY_LIFT                    # phrase end: ease to ready
-        out.append({"accent": acc[i], "pre_h": pre_h, "post_h": post_h})
+        pre_h = apex(n) if acc[i] else TAP_LIFT
+        rest_after = (i + 1 >= len(ns) or
+                      ns[i + 1]["start"] - n["start"] > MOELLER_RESET_GAP)
+        out.append({"accent": acc[i], "pre_h": pre_h,
+                    "rebound": bounce(n), "rest_after": rest_after})
     return out
 
 
@@ -310,13 +321,16 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
         # Rapid hits get a shorter wind-up so the tip stays near the drum
         # instead of flinging up and darting between poses.
         busy = _clamp(gap / 0.30, 0.4, 1.0)
-        # Moeller: the backswing (pre_h) and rebound (post_h) heights come from
-        # the accent/tap stroke type, not from this note's velocity alone -- an
-        # accent rears up high, a tap barely lifts, and the rebound is set to the
-        # NEXT hit's backswing so one up-motion serves both.
+        # Moeller: this hit's backswing height (pre_h) comes from its accent/tap
+        # type and velocity -- an accent rears up high, a tap barely lifts. The
+        # apex is placed just before the downswing (t - down) so the stick is
+        # still RISING right up to it; after contact it takes only a small bounce
+        # (post_h) and then climbs continuously into the NEXT hit's apex, so it is
+        # never suspended at the top. A genuine rest instead settles to READY.
         accent = cls[idx]["accent"]
         pre_h = cls[idx]["pre_h"] * busy
-        post_h = cls[idx]["post_h"] * busy
+        post_h = (READY_LIFT if cls[idx]["rest_after"]
+                  else cls[idx]["rebound"]) * busy
         strike = STRIKE_SLOW - v * (STRIKE_SLOW - STRIKE_FAST)
         down = min(strike, 0.40 * gap)    # apex->contact; never precede the last hit
         up = min(0.07, 0.45 * gap)        # contact->rebound
@@ -392,7 +406,7 @@ def _replane_strokes(target, side, strokes):
         lift_dir = z - z.dot(stick) * stick           # up, perpendicular to stick
         lift_dir = lift_dir.normalized() if lift_dir.length > 1e-6 else z
         set_key(af, p + pre_h * lift_dir)             # Moeller backswing height
-        set_key(rf, p + post_h * lift_dir)            # rebound = next stroke's cock
+        set_key(rf, p + post_h * lift_dir)            # small bounce off the head
 
 
 def _key_ankle(arm, bone, frame_fn):
