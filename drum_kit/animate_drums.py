@@ -49,16 +49,16 @@ import bpy
 import mathutils
 
 try:
-    from .build_drummer import (_rest_tip, shoulder, wrist_target,
-                                 stick_pitch, home_voice, SEAT_YAW)
+    from .build_drummer import (_idle_tip, shoulder, wrist_target,
+                                 stick_pitch, STICK_PITCH_IDLE, SEAT_YAW)
     from piano.piano_midi_animator import _iter_action_fcurves
 except ImportError:  # loaded as a loose script via importlib
     import sys
     _HERE = os.path.dirname(os.path.abspath(__file__))
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
-    from build_drummer import (_rest_tip, shoulder, wrist_target,
-                               stick_pitch, home_voice, SEAT_YAW)
+    from build_drummer import (_idle_tip, shoulder, wrist_target,
+                               stick_pitch, STICK_PITCH_IDLE, SEAT_YAW)
     from piano.piano_midi_animator import _iter_action_fcurves
 
 
@@ -89,8 +89,9 @@ TAP_LIFT = 0.028           # backswing height of a low (tap) stroke, m
 REBOUND_MIN, REBOUND_MAX = 0.018, 0.065  # small bounce off the head (soft->loud)
 MOELLER_RESET_GAP = 0.6    # s; a longer gap is a real rest -> return the hand home
 # A real rest is not a slow-motion drift across the kit. When the gap to the next
-# hit is a genuine rest (rest_after), the idle hand pulls back to its NEUTRAL HOME
-# (the _rest_tip over its convention voice, close to the body) shortly after the
+# hit is a genuine rest (rest_after), the idle hand pulls back to its relaxed
+# SECONDARY REST (the _idle_tip low at the drummer's side, stick hanging down --
+# not reared up over its convention voice) shortly after the
 # last stroke, HOLDS there, and only leaves to approach the next drum a short beat
 # before that hit's windup -- rather than SINE-gliding straight from one drum to
 # the next across the whole empty gap. Crucially the home pull only happens when
@@ -114,6 +115,67 @@ FOREARM_FLEX_ACCENT = 0.3              # accent forearm bob, fraction of apex he
 FOREARM_FLEX_TAP = 0.12                # tap wrist bob (mostly a wrist flick)
 WHIP_LEAD = 0.38                       # accent: arm reaches the anchor this
                                        # fraction of the way early (bead trails)
+
+# --- travel speed / acceleration clamp (average-drummer arm relocation) -----
+# A real arm cannot teleport between drums: relocating the hand across the kit is
+# a fast REACH, and a reach has a floor on how quickly it can be made. Fast
+# point-to-point arm-movement biomechanics put an average player's peak
+# hand-translation speed at roughly 2-4 m/s and peak acceleration in the tens of
+# m/s^2 (a comfortable reach is only ~1 m/s / ~5 m/s^2; a hurried fill pushes
+# toward the ~4.2 m/s "fastest athletic wrist"). Left alone, the animator glides a
+# cross-kit move across only the few frames left between two close hits -- the
+# stick's rebound and the next windup eat the rest -- so a 1 m hi-hat->ride move in
+# 0.125 s implied a >13 m/s / >300 m/s^2 dart. `_clamp_travel` (a post-pass) pulls
+# each over-fast relocation's DEPARTURE keyframe earlier, down to just after the
+# previous strike, so the hand LEAVES the last drum sooner and glides the same
+# distance over more time at a believable speed. Under a SINE ease the peak speed
+# is (pi/2)x and the peak accel (pi^2/2)x the straight-line average, so the minimum
+# believable move time over a distance D is
+#     T_min = max( D*pi / (2*V_MAX),  pi*sqrt( D / (2*A_MAX) ) ).
+# When even leaving the instant the last stroke frees the hand is still over the
+# speed cap, the sticking is physically impossible for one hand (a real drummer
+# alternates hands; see RESEARCH.md 3) -- we do the best we can and warn.
+TRAVEL_V_MAX = 4.2     # m/s, peak hand-translation speed for a kit relocation
+TRAVEL_A_MAX = 60.0    # m/s^2, peak hand-translation acceleration
+TRAVEL_WARN = 8.0      # m/s; a residual over this is clearly superhuman -> warn
+
+# --- inter-hand clearance (keep the two sticks from passing through) ---------
+# The two hands are keyed INDEPENDENTLY, so nothing stops the right stick from
+# crossing through the left. A hats-over-snare groove IS genuine crossed-hand
+# playing -- the sticks are meant to pass close -- but they must go cleanly OVER
+# and UNDER each other, never through. Holding a per-frame clearance is not enough
+# for that: where the sticks overlap horizontally their natural motion can SWAP
+# which one is on top between one frame and the next, and a swap means they passed
+# straight through even though neither frame was interpenetrating. So
+# `_deconflict_hands` (a post-pass) groups the frames where the arms overlap
+# horizontally (only there does the vertical gap keep them apart) into
+# ENGAGEMENTS, picks ONE persistent over/under order per engagement, and holds it:
+# it drives the vertical gap in that order to DECONFLICT_CLEAR by RAISING the upper
+# stick (preferred -- the lower one can ride up underneath, and is never shoved
+# down into a drum), lowering the lower one only when the upper is busy landing a
+# bead. So both sticks may move vertically, but their order never flips. The push
+# is a rigid Z shift of the tip+wrist empties that the IK follows; X/Y (the strike
+# point) never moves, so every contact still lands on its head.
+DECONFLICT_CLEAR = 0.06    # m; minimum stick-to-stick clearance to hold. Sticks
+                           # are ~0.02 thick and the fists/forearms (at the wrist
+                           # end of the segment) ~0.055-0.07, so 0.06 clears the
+                           # thin sticks outright and pulls the fat fists apart too.
+DECONFLICT_MAX = 0.12      # m; cap on the TOTAL vertical dodge applied to one hand
+                           # (vs its authored height). Sticks need < CLEAR to
+                           # separate so they clear well under this, while a fast
+                           # fill's IK-stubborn forearm clash is held gentle instead
+                           # of piling up offset and jerking the stick.
+DECONFLICT_LOCK = 2.0      # frames; within this of its own contact a hand is
+                           # striking and must not move (the bead is landing)
+DECONFLICT_TAPER = 4       # frames to ramp an engagement's offset back to 0 at its edges
+DECONFLICT_BRIDGE = 5      # merge engagements separated by a gap this small, so a fast
+                           # fill holds ONE over/under order instead of fragmenting
+DECONFLICT_LIFT_BIAS = 2.0 # prefer RAISING the upper stick over lowering the lower
+DECONFLICT_PASSES = 5      # re-solve (the IK response is nonlinear) to converge
+# Note: a forearm's mid-point (its closest-approach spot in a cross-body fill) barely
+# moves when the WRIST empty shifts -- the elbow, set by IK, holds it -- so a fast
+# fill's forearms are left to graze rather than force a big stick hitch to chase them.
+# The sticks themselves (what the eye reads as "drumsticks") never cross.
 
 # --- kick ------------------------------------------------------------------
 BEATER_STRIKE = math.radians(6.0)      # beater angle at contact (into head)
@@ -218,6 +280,16 @@ def _clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
 
+def _min_travel_time(dist):
+    """Minimum believable duration for a speed/accel-bounded SINE relocation of
+    the hand over ``dist`` metres (see TRAVEL_V_MAX / TRAVEL_A_MAX)."""
+    if dist <= 0.0:
+        return 0.0
+    t_vel = dist * math.pi / (2.0 * TRAVEL_V_MAX)
+    t_acc = math.pi * math.sqrt(dist / (2.0 * TRAVEL_A_MAX))
+    return max(t_vel, t_acc)
+
+
 def _apply_stick_easing(obj, roles):
     """Shape each hand's motion so it flows rather than teleports.
 
@@ -316,9 +388,9 @@ def _animate_arm(target, wrist, side, notes, fps, frame_start):
     last = frame_start
     cls = _moeller_strokes(notes)
 
-    rest = _rest_tip(side)
+    rest = _idle_tip(side)
     tip_home = mathutils.Vector(rest)
-    wrist_home = mathutils.Vector(wrist_target(sh, rest, stick_pitch(home_voice(side))))
+    wrist_home = mathutils.Vector(wrist_target(sh, rest, STICK_PITCH_IDLE))
     target.location = rest
     target.keyframe_insert(data_path="location", frame=float(frame_start))
     roles.append((float(frame_start), "rest"))
@@ -457,6 +529,311 @@ def _replane_strokes(target, side, strokes):
         lift_dir = lift_dir.normalized() if lift_dir.length > 1e-6 else z
         set_key(af, p + pre_h * lift_dir)             # Moeller backswing height
         set_key(rf, p + post_h * lift_dir)            # small bounce off the head
+
+
+def _loc_fcurves(obj):
+    """{array_index: fcurve} for an object's location, or {} if unanimated."""
+    if obj is None or obj.animation_data is None or obj.animation_data.action is None:
+        return {}
+    return {fc.array_index: fc
+            for fc in _iter_action_fcurves(obj.animation_data.action)
+            if fc.data_path == "location"}
+
+
+def _clamp_travel(target, wrist, side, fps):
+    """Cap each between-drum relocation to an average drummer's reach speed.
+
+    After the arms are keyed, a hand that must cross the kit between two closely
+    spaced hits glides the whole way in the few frames the music leaves -- the
+    >12 m/s teleport this fixes. For every travel segment whose SINE peak speed
+    exceeds TRAVEL_V_MAX (or whose peak accel exceeds TRAVEL_A_MAX), the segment's
+    DEPARTURE keyframe is pulled earlier -- down to just after the previous strike
+    -- so the hand leaves the last drum sooner and glides the same distance over
+    more time. The stick-tip and wrist empties are shifted by the SAME amount so
+    the stick stays rigid. If even departing the instant the previous stroke frees
+    the hand is still over the speed cap, the sticking is physically impossible for
+    one hand (a real player alternates hands, see RESEARCH.md 3) -- we shift as far
+    as we can and warn.
+
+    Only relocations (tip move > SAME_SPOT) are touched; same-drum bobs and the
+    small post-strike bounce are left alone."""
+    tip_fcs = _loc_fcurves(target)
+    wr_fcs = _loc_fcurves(wrist)
+    if len(tip_fcs) < 3:
+        return
+
+    def pos(fcs, f):
+        out = []
+        for i in (0, 1, 2):
+            fc, val = fcs.get(i), 0.0
+            if fc is not None:
+                for kp in fc.keyframe_points:
+                    if abs(kp.co[0] - f) < 0.01:
+                        val = kp.co[1]
+                        break
+            out.append(val)
+        return mathutils.Vector(out)
+
+    def shift(fcs, f_old, delta):
+        for fc in fcs.values():
+            for kp in fc.keyframe_points:
+                if abs(kp.co[0] - f_old) < 0.01:
+                    kp.co[0] += delta
+                    kp.handle_left[0] += delta
+                    kp.handle_right[0] += delta
+                    break
+        for fc in fcs.values():
+            fc.update()
+
+    # All location axes share keyframe frames (keyed together); read them off X.
+    frames = sorted(round(kp.co[0], 5) for kp in tip_fcs[0].keyframe_points)
+    for j in range(1, len(frames)):
+        f0, f1 = frames[j - 1], frames[j]
+        dist = (pos(tip_fcs, f1) - pos(tip_fcs, f0)).length
+        if dist < SAME_SPOT:
+            continue                                   # a bob/bounce, not a relocation
+        dt = (f1 - f0) / fps
+        if dt <= 0.0:
+            continue
+        peak = dist * math.pi / (2.0 * dt)
+        if peak <= TRAVEL_V_MAX + 1e-6 and dt >= _min_travel_time(dist) - 1e-6:
+            continue                                   # already believable
+        # Pull the departure (f0) earlier, but never before the previous keyframe
+        # (the hand can't leave before it has struck the last drum).
+        floor = frames[j - 2] + 0.75 if j >= 2 else frames[0]
+        f0_new = max(floor, f1 - _min_travel_time(dist) * fps)
+        if f0_new < f0 - 1e-6:
+            shift(tip_fcs, f0, f0_new - f0)
+            if wr_fcs:                                 # move the wrist by the same delta
+                wf = min((round(kp.co[0], 5) for kp in wr_fcs[0].keyframe_points),
+                         key=lambda x: abs(x - f0), default=None)
+                if wf is not None and abs(wf - f0) < 2.0:
+                    shift(wr_fcs, wf, f0_new - f0)
+            frames[j - 1] = f0_new
+            dt = (f1 - f0_new) / fps
+            peak = dist * math.pi / (2.0 * dt)
+        # Even leaving the instant the last stroke frees the hand, a residual well
+        # over the cap is faster than any human arm can travel -- surface it. (A
+        # move a little over cap is just a hurried-but-plausible fill and is left
+        # quiet.) Usually this means the sticking crams two far hits onto one hand
+        # in too little time; a real player would spread or alternate them.
+        if peak > TRAVEL_WARN:
+            print("animate_drums: %s-hand relocation into frame %d is faster than a "
+                  "believable reach (%.2f m in %.03fs, peak %.1f m/s vs %.1f cap) -- "
+                  "check the sticking/tempo for this passage"
+                  % (side, int(round(f1)), dist, dt, peak, TRAVEL_V_MAX))
+
+
+def _seg_seg_closest(p1, q1, p2, q2):
+    """Closest points (c1 on segment p1->q1, c2 on p2->q2) between two 3D
+    segments. Standard clamped-parameter solve (Ericson, Real-Time Collision
+    Detection); returns the pair whose distance is the segments' minimum."""
+    d1 = q1 - p1
+    d2 = q2 - p2
+    r = p1 - p2
+    a = d1.dot(d1)
+    e = d2.dot(d2)
+    f = d2.dot(r)
+    if a <= 1e-9 and e <= 1e-9:
+        return p1, p2
+    if a <= 1e-9:
+        s, t = 0.0, _clamp(f / e, 0.0, 1.0)
+    else:
+        c = d1.dot(r)
+        if e <= 1e-9:
+            t, s = 0.0, _clamp(-c / a, 0.0, 1.0)
+        else:
+            b = d1.dot(d2)
+            denom = a * e - b * b
+            s = _clamp((b * f - c * e) / denom, 0.0, 1.0) if denom > 1e-9 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, _clamp(-c / a, 0.0, 1.0)
+            elif t > 1.0:
+                t, s = 1.0, _clamp((b - c) / a, 0.0, 1.0)
+    return p1 + d1 * s, p2 + d2 * t
+
+
+def _bake_z_dodge(tip, wrist, off, own_contacts, auth_t, auth_w, frame_start, frame_end):
+    """Add this pass's vertical dodge ``off`` (frame -> Z offset over the engaged
+    spans) onto a hand's tip and wrist Z curves. The tip and wrist shift by the SAME
+    amount so the stick stays rigid and only rides higher/lower; X/Y (the strike
+    point) is never touched, so contacts still land. The dodge is added onto the
+    CURRENT curve (a fixed-point iteration: each pass reads the last pass's result
+    and adds the remaining correction, converging in DECONFLICT_PASSES), but the
+    result is clamped so the TOTAL departure from the authored height (``auth_t`` /
+    ``auth_w``) never exceeds DECONFLICT_MAX -- that keeps an IK-stubborn forearm
+    clash from piling up offset pass after pass and jerking the stick.
+
+    The value is linearly tapered to 0 over DECONFLICT_TAPER frames just past each
+    span (eases on/off, no snap or plateau) and gated to 0 within DECONFLICT_LOCK
+    frames of this hand's own contacts (a strike is never displaced); every touched
+    frame is keyed with auto-smoothed Bezier interpolation."""
+    if not off:
+        return
+    tfz = _loc_fcurves(tip).get(2)
+    wfz = _loc_fcurves(wrist).get(2)
+    if tfz is None:
+        return
+    lo, hi = int(frame_start), int(frame_end)
+    keys = sorted(off)
+
+    def unlock(g):                     # 0 at this hand's own contacts -> beads stay put
+        if not own_contacts:
+            return 1.0
+        return _clamp(min(abs(g - c) for c in own_contacts) / DECONFLICT_LOCK, 0.0, 1.0)
+
+    def ramp(g):
+        # inside an engaged span -> the solved value; just past it -> ramp to 0.
+        if g in off:
+            return off[g]
+        best = 0.0
+        for c in keys:
+            dd = abs(g - c)
+            if dd <= DECONFLICT_TAPER:
+                v = off[c] * (1.0 - dd / (DECONFLICT_TAPER + 1.0))
+                if abs(v) > abs(best):
+                    best = v
+        return best
+
+    touch = sorted({g for c in keys
+                    for g in range(c - DECONFLICT_TAPER, c + DECONFLICT_TAPER + 1)
+                    if lo <= g <= hi})
+    val = {g: ramp(g) * unlock(g) for g in touch}
+    base_t = {g: tfz.evaluate(g) for g in touch}          # current curve (accumulates)
+    base_w = {g: wfz.evaluate(g) for g in touch} if wfz is not None else {}
+    for g in touch:
+        o = val[g]
+        if abs(o) < 5e-4 and abs(base_t[g] - auth_t[g]) < 5e-4:
+            continue                   # nothing here yet -> leave the current key alone
+        # total offset from the AUTHORED height, capped both ways
+        nt = _clamp(base_t[g] + o, auth_t[g] - DECONFLICT_MAX, auth_t[g] + DECONFLICT_MAX)
+        kp = tfz.keyframe_points.insert(g, nt, options={'FAST'})
+        kp.interpolation = 'BEZIER'
+        kp.handle_left_type = kp.handle_right_type = 'AUTO_CLAMPED'
+        if wfz is not None:
+            nw = _clamp(base_w[g] + o, auth_w[g] - DECONFLICT_MAX, auth_w[g] + DECONFLICT_MAX)
+            kw = wfz.keyframe_points.insert(g, nw, options={'FAST'})
+            kw.interpolation = 'BEZIER'
+            kw.handle_left_type = kw.handle_right_type = 'AUTO_CLAMPED'
+    tfz.update()
+    if wfz is not None:
+        wfz.update()
+
+
+def _deconflict_hands(arm, hands, contacts, frame_start, frame_end):
+    """Keep the two arms from clipping through -- and from PASSING THROUGH -- each
+    other (see the DECONFLICT_* notes).
+
+    The clip is not just the sticks: a cross-body fill swings one whole FOREARM
+    through the other, so each pass reads the true IK-solved arm at every frame --
+    the forearm (elbow->wrist) AND the stick (wrist->tip) -- and takes the closest
+    approach across all four segment pairs. The frames where that closest pair
+    overlaps HORIZONTALLY (dh < DECONFLICT_CLEAR -- only there does the vertical gap
+    separate them) are grouped into ENGAGEMENTS. Each engagement is held in ONE
+    over/under order (whichever of R-over-L / L-over-R costs less total lift to
+    maintain), and within it the vertical gap is driven to DECONFLICT_CLEAR by
+    RAISING the upper stick (DECONFLICT_LIFT_BIAS: the lower can ride up under it,
+    never shoved down into a drum) and lowering the lower only when the upper is
+    busy landing a bead (freedom). So the order never flips -> the sticks pass
+    cleanly over and under, never through. The push is a rigid Z shift of the
+    tip+wrist empties that the IK follows; X/Y never moves so contacts still land.
+    The IK response is nonlinear, so each pass RE-READS the solved geometry and adds
+    the remaining correction (a fixed-point iteration converging in DECONFLICT_PASSES).
+    If both hands strike at once (a true simultaneous cross) neither can yield -> warn."""
+    scene = bpy.context.scene
+    tip = {"R": hands["R"][0], "L": hands["L"][0]}
+    wrist = {"R": hands["R"][1], "L": hands["L"][1]}
+    if any(("forearm." + s) not in arm.pose.bones or ("hand." + s) not in arm.pose.bones
+           for s in ("R", "L")):
+        return
+    M = arm.matrix_world
+
+    def arm_segs(side):
+        """(forearm, stick) world segments of one arm from the solved pose."""
+        fb = arm.pose.bones["forearm." + side]
+        hb = arm.pose.bones["hand." + side]
+        return ((M @ fb.head, M @ fb.tail), (M @ hb.head, M @ hb.tail))
+
+    def freedom(side, fr):
+        cs = contacts.get(side)
+        if not cs:
+            return 1.0
+        return _clamp(min(abs(fr - c) for c in cs) / DECONFLICT_LOCK, 0.0, 1.0)
+
+    lo, hi = int(frame_start), int(frame_end)
+    # Snapshot the AUTHORED tip/wrist heights before any dodge, so the per-hand total
+    # offset can be capped against them (see _bake_z_dodge).
+    tz = {s: _loc_fcurves(tip[s]).get(2) for s in ("R", "L")}
+    wz = {s: _loc_fcurves(wrist[s]).get(2) for s in ("R", "L")}
+    if any(tz[s] is None for s in ("R", "L")):
+        return
+    auth_t = {s: {f: tz[s].evaluate(f) for f in range(lo, hi + 1)} for s in ("R", "L")}
+    auth_w = {s: ({f: wz[s].evaluate(f) for f in range(lo, hi + 1)} if wz[s] else {})
+              for s in ("R", "L")}
+    warned = [False]
+    for _ in range(DECONFLICT_PASSES):
+        # 1. Sample the solved arms; where the closest pair overlaps horizontally,
+        #    record the two approach heights (only their vertical order matters).
+        eng = {}
+        for fr in range(lo, hi + 1):
+            scene.frame_set(fr)
+            segsR, segsL = arm_segs("R"), arm_segs("L")
+            best = None
+            for i, (a0, a1) in enumerate(segsR):
+                for j, (b0, b1) in enumerate(segsL):
+                    cR, cL = _seg_seg_closest(a0, a1, b0, b1)
+                    dd = (cR - cL).length
+                    if best is None or dd < best[0]:
+                        best = (dd, cR, cL, i == 0 or j == 0)  # forearm involved?
+            _, cR, cL, fore = best
+            if math.hypot(cR.x - cL.x, cR.y - cL.y) < DECONFLICT_CLEAR:
+                eng[fr] = (cR.z, cL.z, fore)
+        # 2. Group engaged frames into engagements, BRIDGING gaps up to
+        #    DECONFLICT_BRIDGE frames. A fast cross-body fill dips in and out of
+        #    horizontal overlap every frame or two; without bridging it fragments
+        #    into many tiny engagements whose separately-chosen orders (and their
+        #    tapers) fight and cancel. Bridging holds ONE order across the whole
+        #    passage so the sticks never flip -- even across a brief separation.
+        runs = []
+        for fr in sorted(eng):
+            if runs and fr - runs[-1][1] <= DECONFLICT_BRIDGE:
+                runs[-1][1] = fr
+            else:
+                runs.append([fr, fr])
+        # 3. Per engagement: hold the cheaper order and drive the vertical gap.
+        offR, offL = {}, {}
+        for a, b in runs:
+            frames = [f for f in range(a, b + 1) if f in eng]   # skip bridged gaps
+            costR = sum(max(0.0, DECONFLICT_CLEAR - (eng[f][0] - eng[f][1])) for f in frames)
+            costL = sum(max(0.0, DECONFLICT_CLEAR - (eng[f][1] - eng[f][0])) for f in frames)
+            top, bot = ("R", "L") if costR <= costL else ("L", "R")
+            off_top = offR if top == "R" else offL
+            off_bot = offR if bot == "R" else offL
+            for f in frames:
+                zt = eng[f][0] if top == "R" else eng[f][1]
+                zb = eng[f][1] if top == "R" else eng[f][0]
+                deficit = DECONFLICT_CLEAR - (zt - zb)
+                if deficit <= 0.0:
+                    continue           # already correctly stacked with clearance
+                fT, fB = freedom(top, f), freedom(bot, f)
+                wT, wB = fT * DECONFLICT_LIFT_BIAS, fB
+                if wT + wB <= 1e-6:
+                    if not warned[0]:
+                        print("animate_drums: both arms strike within %.0f mm at "
+                              "frame %d (simultaneous cross) -- cannot separate "
+                              "without moving a contact; check the sticking here"
+                              % (DECONFLICT_CLEAR * 1000.0, f))
+                        warned[0] = True
+                    continue
+                off_top[f] = off_top.get(f, 0.0) + deficit * wT / (wT + wB)  # raise upper
+                off_bot[f] = off_bot.get(f, 0.0) - deficit * wB / (wT + wB)  # lower lower
+        if not offR and not offL:
+            break
+        _bake_z_dodge(tip["R"], wrist["R"], offR, contacts.get("R"),
+                      auth_t["R"], auth_w["R"], lo, hi)
+        _bake_z_dodge(tip["L"], wrist["L"], offL, contacts.get("L"),
+                      auth_t["L"], auth_w["L"], lo, hi)
 
 
 def _key_ankle(arm, bone, frame_fn):
@@ -809,6 +1186,21 @@ def animate_drums(fingering_json, fps=24, frame_start=1):
     for side in ("R", "L"):
         if ik[side] is not None and side in stroke_rec:
             _replane_strokes(ik[side], side, stroke_rec[side])
+    # Cap between-drum relocations to a believable reach speed: pull each over-fast
+    # travel segment's departure earlier so the hand leaves the last drum sooner
+    # and glides across, instead of teleporting in the final few frames.
+    for side in ("R", "L"):
+        if ik[side] is not None and wrist[side] is not None:
+            _clamp_travel(ik[side], wrist[side], side, fps)
+    # Keep the two hands' sticks from clipping through each other: separate any
+    # overlapping pair vertically (higher stick up, lower down) without moving a
+    # strike point. Needs both hands keyed.
+    if drummer is not None and all(ik[s] is not None and wrist[s] is not None
+                                   for s in ("R", "L")):
+        contacts = {s: [rec[1] for rec in stroke_rec.get(s, [])] for s in ("R", "L")}
+        _deconflict_hands(drummer,
+                          {"R": (ik["R"], wrist["R"]), "L": (ik["L"], wrist["L"])},
+                          contacts, frame_start, int(round(last)))
     if beater is not None and kboard is not None and drummer is not None:
         last = max(last, _animate_kick(beater, kboard, drummer, "foot.R",
                                        ankle_e["R"], kick, fps, frame_start))

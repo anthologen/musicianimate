@@ -309,6 +309,10 @@ STICK_PITCH_FLAT = math.radians(-8.0)
 STICK_PITCH_UP = math.radians(28.0)
 STICK_PITCH_RIDE = math.radians(10.0)   # bead-up but shallow: hand below the bead,
                                         # yet the shaft clears the flat ride disc
+STICK_PITCH_IDLE = math.radians(-6.0)   # a resting hand hovers ready over the kit,
+                                        # bead just forward-and-down -- not reared up
+                                        # over the hats, not folded bead-down by the
+                                        # body (see _idle_tip)
 # Voices played from above (slightly bead-down): the snare and the toms, so their
 # grips ride above the shell instead of the up-pitched stick clipping through it.
 FLAT_VOICES = {"snare", "side_stick", "tom_floor", "tom_mid", "tom_hi"}
@@ -397,6 +401,34 @@ def _rest_tip(side):
     """Where each stick tip hovers at rest: over its convention home."""
     home = kit_layout.strike_point("hihat_closed" if side == "R" else "snare")
     return (home[0], home[1], home[2] + 0.10)
+
+
+# A hand at a GENUINE rest (no note due for a while) does not keep hovering up over
+# its convention voice -- especially the RIGHT hand, whose voice is the hi-hat,
+# reached high and clear across the body: parked there it looks poised to play a
+# cymbal it has no intention of hitting. Instead an idle hand waits READY in front
+# of the drummer, out over the legs amid the kit: hovering just above the snare
+# (the central, forward drum), split a little to its own side, bead pointing
+# forward-and-down (STICK_PITCH_IDLE) so it can drop straight onto the next note
+# without a long reach. Anchored to the snare + kit centre so it follows the kit
+# layout, NOT tucked back by the body or reared over the hats.
+IDLE_Y = 0.25             # forward -- out over the knees / front of the kit. The bead
+                          # rests here so the grip (a stick-length BACK from it) still
+                          # sits AHEAD of the body and the arm reaches forward rather
+                          # than folding the forearm back by the hip (tuned to the IK:
+                          # further back than this and the right elbow solves in front
+                          # of the wrist, bending the arm behind the drummer).
+IDLE_Z = 0.72             # ready hover height, just above the snare head
+IDLE_HALF = 0.16          # each hand waits this far to its own side of centre, m
+IDLE_CENTRE_X = 0.06      # centre-line the two resting hands straddle (over the lap)
+
+
+def _idle_tip(side):
+    """Ready resting spot for an idle hand: hovering in front of the drummer out
+    over the legs amid the kit, offset to the hand's own side, bead forward-and-down
+    so it can drop straight onto the next note (see notes above and _rest_tip)."""
+    out = -IDLE_HALF if side == "R" else IDLE_HALF    # R side is -X, L side is +X
+    return (IDLE_CENTRE_X + out, IDLE_Y, IDLE_Z)
 
 
 # ---------------------------------------------------------------------------

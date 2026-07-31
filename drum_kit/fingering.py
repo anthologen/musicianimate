@@ -22,6 +22,13 @@ fallbacks (see RESEARCH.md):
     so grooves keep the natural hand assignment while fills take the nearest
     stick.
   * Simultaneous hits are split across the two hands to minimize total travel.
+  * Reach feasibility overrides all of the above: a hand cannot cross the kit
+    faster than a real arm (REACH_V_MAX). If the convention pick physically
+    cannot reach a hit in time -- or, looking one hit ahead, if committing it
+    here would strand the hand for an imminent locked-voice hit -- the note is
+    handed to the other hand, so the strong hand stays free (leading with the
+    off hand). This is what removes the cross-kit "teleports" a greedy pick
+    otherwise produces (e.g. one hand on the hi-hat then the ride a beat later).
 
 Usage::
 
@@ -58,8 +65,22 @@ except ImportError:
 FAST_GAP = 0.14        # s; below this, successive stick hits alternate hands
 CONV_PENALTY = 0.6     # metres-equivalent cost for leaving a voice's
                        # convention hand (keeps grooves on the standard grip)
-BUSY_GAP = 0.05        # s; a hand asked to move far within this is flagged
-BUSY_DIST = 0.15       # m of travel that BUSY_GAP cannot physically cover
+
+# Physical reach cap (mirrors animate_drums TRAVEL_V_MAX / TRAVEL_A_MAX): a hand
+# cannot relocate across the kit faster than a real arm. Assigning a hit to its
+# convention/nearest hand is pointless if that hand physically cannot get there in
+# time -- it produces the >12 m/s "teleport" the animator can only flag. So after
+# the convention pick, the planner checks reach: if the chosen hand cannot make the
+# move (and, with one-step lookahead, if committing it here would strand it for an
+# imminent LOCKED-voice hit it must play), the note is handed to the other hand --
+# exactly how a drummer leads with the off hand to keep the strong hand free. Kept
+# in sync with animate_drums; only DISTANCES and TIMES matter, so this stays
+# body-agnostic like the rest of the planner.
+REACH_V_MAX = 4.2      # m/s, peak believable hand-translation speed
+REACH_A_MAX = 60.0     # m/s^2, peak believable hand-translation acceleration
+REASSIGN_MARGIN = 0.25  # only switch hands when it improves the worst-case overage
+                        # by at least this (avoids fidgeting on near-ties)
+WARN_OVERAGE = 1.2     # residual overage above this (~>5 m/s) is worth flagging
 # TOMS are flex voices with no convention hand, so without a bias the planner
 # picks purely by travel from the hand's LAST position -- which lets a hand that
 # just played the near side "stick" to a tom across the kit that it then has to
@@ -120,6 +141,52 @@ def _other(hand):
     return "L" if hand == "R" else "R"
 
 
+def _min_move_time(dist):
+    """Minimum believable time (s) for a hand to relocate `dist` metres, from the
+    reach caps (mirrors animate_drums._min_travel_time)."""
+    if dist <= 0.0:
+        return 0.0
+    return max(dist * math.pi / (2.0 * REACH_V_MAX),
+               math.pi * math.sqrt(dist / (2.0 * REACH_A_MAX)))
+
+
+def _overage(gap, dist):
+    """How far a move of `dist` metres in `gap` seconds exceeds the reach cap:
+    <=1 is reachable, >1 is too fast for a real arm."""
+    if gap <= 0.0:
+        return 9e9 if dist > 1e-9 else 0.0
+    return _min_move_time(dist) / gap
+
+
+def _reach_override(h, note, hand, t, next_ev):
+    """Reassign a single stick `note` from preferred hand `h` to the other hand
+    when `h` physically cannot reach it in time -- optionally leading with the off
+    hand so `h` is free for an imminent hit convention pins to it.
+
+    Compares the worst-case reach overage of keeping `h` (plan A) against handing
+    this note to the other hand (plan B), looking one hit ahead when the next hit
+    is a lone note that convention locks to `h`. Only switches when it is over the
+    cap AND the switch is a clear improvement (see REASSIGN_MARGIN)."""
+    ho = _other(h)
+    d_h, g_h = _dist(hand[h]["pt"], note["point"]), t - hand[h]["t"]
+    d_ho, g_ho = _dist(hand[ho]["pt"], note["point"]), t - hand[ho]["t"]
+    # One-step lookahead only when the next hit is a lone note pinned to h.
+    nxt = None
+    if next_ev is not None and len(next_ev[1]) == 1 and next_ev[1][0]["limb"] == h:
+        nxt = (next_ev[0], next_ev[1][0]["point"])
+    if nxt is not None:
+        mt, mp = nxt
+        cost_keep = max(_overage(g_h, d_h),                     # h plays this...
+                        _overage(mt - t, _dist(note["point"], mp)))  # ...then the next
+        cost_swap = max(_overage(g_ho, d_ho),                   # off hand plays this...
+                        _overage(mt - hand[h]["t"], _dist(hand[h]["pt"], mp)))  # h goes straight to next
+    else:
+        cost_keep, cost_swap = _overage(g_h, d_h), _overage(g_ho, d_ho)
+    if cost_keep > 1.0 and cost_swap < cost_keep - REASSIGN_MARGIN:
+        return ho
+    return h
+
+
 def _cost(state, note, hand):
     """Cost of playing `note` with `hand` from its last position `state`:
     arm travel plus a penalty for abandoning the voice's convention hand."""
@@ -136,8 +203,12 @@ def _cost(state, note, hand):
     return c
 
 
-def _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, prev_voice, warnings):
-    """Return [(note, 'R'|'L'), ...] for the simultaneous stick notes."""
+def _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, prev_voice,
+                  next_ev, warnings):
+    """Return [(note, 'R'|'L'), ...] for the simultaneous stick notes.
+
+    `next_ev` is the following stick event ``(t, [notes])`` (or None) used for the
+    reach lookahead."""
     if len(stick_notes) == 1:
         n = stick_notes[0]
         gap = (t - prev_stick_t) if prev_stick_t is not None else None
@@ -156,6 +227,10 @@ def _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t, prev_voice, war
             h = _other(prev_hand)                        # flex voices: roll/fill
         else:
             h = "R" if _cost(hand["R"], n, "R") <= _cost(hand["L"], n, "L") else "L"
+        # A hand can only play a hit it can physically reach in time; if the
+        # convention pick strands it (now or for an imminent locked hit), lead
+        # with the other hand instead.
+        h = _reach_override(h, n, hand, t, next_ev)
         return [(n, h)]
 
     # Two (or more) simultaneous hits: pick the R/L split with least travel.
@@ -203,10 +278,10 @@ def plan_strikes(notes, beats_at):
     hand = {"R": {"t": -1e9, "pt": kit_layout.strike_point("hihat_closed")},
             "L": {"t": -1e9, "pt": kit_layout.strike_point("snare")}}
     hihat_events = []          # (t, 'open'|'closed')
-    prev_hand = None
-    prev_stick_t = None
-    prev_voice = None
 
+    # Phase 1: map notes, emit the (deterministic) feet, and collect the stick
+    # events so the hand assignment can look one hit ahead.
+    stick_events = []          # (t, [merged stick notes])
     for ev in group_events(notes):
         t = ev["t"]
         stick_notes = []
@@ -227,16 +302,23 @@ def plan_strikes(notes, beats_at):
                 stick_notes.append(merged)
                 if merged["voice"] in ("hihat_open", "hihat_closed"):
                     hihat_events.append((t, "open" if merged.get("open") else "closed"))
+        if stick_notes:
+            stick_events.append((t, stick_notes))
 
-        if not stick_notes:
-            continue
-
+    # Phase 2: assign each stick event to the hands, reach-aware with lookahead.
+    prev_hand = prev_stick_t = prev_voice = None
+    for i, (t, stick_notes) in enumerate(stick_events):
+        next_ev = stick_events[i + 1] if i + 1 < len(stick_events) else None
         assigned = _assign_hands(stick_notes, hand, t, prev_hand, prev_stick_t,
-                                 prev_voice, warnings)
+                                 prev_voice, next_ev, warnings)
         for n, h in assigned:
-            if t - hand[h]["t"] < BUSY_GAP and _dist(hand[h]["pt"], n["point"]) > BUSY_DIST:
-                warnings.append(f"{h} hand asked to cross the kit within "
-                                f"{BUSY_GAP*1000:.0f}ms at {t:.3f}s")
+            over = _overage(t - hand[h]["t"], _dist(hand[h]["pt"], n["point"]))
+            if over > WARN_OVERAGE:
+                warnings.append(
+                    f"{h} hand cannot reach {n['voice']} at {t:.3f}s in time "
+                    f"({_dist(hand[h]['pt'], n['point']):.2f} m in "
+                    f"{t - hand[h]['t']:.3f} s, {over:.1f}x reach) -- the "
+                    f"arrangement is faster than one hand can travel")
             _emit(out, n, h, beats_at)
             hand[h] = {"t": t, "pt": n["point"]}
 
@@ -343,6 +425,36 @@ def selftest():
     fh = [n["limb"] for n in out]
     check("tom fill alternates", all(fh[i] != fh[i + 1] for i in range(len(fh) - 1)),
           "".join(fh))
+
+    # Reach feasibility: a locked cymbal the convention (right) hand cannot reach
+    # in time is handed to the other hand rather than teleported across the kit.
+    # Right rides on the beat (left backbeat), then a hi-hat too soon after for
+    # the right to cross back -> the hi-hat goes to the left hand.
+    rl = _mknotes([(0.0, 51), (0.0, 38), (0.25, 42)])
+    out, _, _, _ = plan_strikes(rl, beats_at)
+    lm = {n["voice"]: n["limb"] for n in out}
+    check("far hi-hat after a ride is handed to the left hand",
+          lm.get("hihat_closed") == "L" and lm.get("ride") == "R", str(lm))
+
+    # Lookahead: keeping time on the hi-hat then striking the ride a beat later --
+    # the right hand leads the hi-hat's last note with the LEFT so it is free to
+    # reach the ride in time, instead of being stranded on the hi-hat.
+    lr = _mknotes([(0.0, 42), (0.4, 42), (0.5, 51)])
+    out, _, _, _ = plan_strikes(lr, beats_at)
+    hh_last = [n["limb"] for n in out
+               if n["voice"] == "hihat_closed" and abs(n["start"] - 0.4) < 1e-6]
+    ride = [n["limb"] for n in out if n["voice"] == "ride"]
+    check("lookahead leads the pre-ride hi-hat with the left hand",
+          hh_last == ["L"] and ride == ["R"],
+          str([(round(n["start"], 3), n["voice"], n["limb"]) for n in out]))
+
+    # A comfortable hi-hat/ride groove is NOT disturbed: with time to cross, the
+    # right hand keeps both (no spurious handoff).
+    slow = _mknotes([(0.0, 42), (0.6, 51), (1.2, 42), (1.8, 51)])
+    out, _, _, _ = plan_strikes(slow, beats_at)
+    check("unhurried hi-hat/ride stays on the right hand",
+          all(n["limb"] == "R" for n in out),
+          "".join(n["limb"] for n in out))
 
     if failures:
         print(f"\nSELFTEST FAILED: {failures}")
