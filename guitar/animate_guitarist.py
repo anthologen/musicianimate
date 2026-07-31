@@ -90,14 +90,16 @@ NECK_ELEV = math.radians(23.0)     # neck rises this far above horizontal
 #     out straight (~160 deg) and CANNOT rotate. A locked elbow can't strum from the
 #     elbow, so every stroke telescopes the whole rigid arm in and out -- the classic
 #     "stretchy" look.
-# This MODERATE height puts the picking hand ~48 cm from the shoulder (~80% of reach),
-# leaving the elbow comfortably bent (~125-130 deg) with slack to flex. Proper standing
+# This MODERATE height puts the picking hand ~49 cm from the shoulder (~85% of reach),
+# leaving the elbow comfortably bent (~115 deg) with slack to flex. Proper standing
 # strumming technique drives the stroke from the elbow/forearm (National Guitar Academy;
-# Notes on a Guitar), and a bent elbow is what lets it: the picking-arm IK then flexes
-# the elbow ~12 deg across a chord strum (the forearm swinging on the bout) while the
-# shoulder stays nearly still, and tiny single-note picks barely move the arm at all.
+# Notes on a Guitar), and a bent elbow is what lets it: with the elbow parked low on the
+# bout (see ELBOW_POLE_OVERRIDE) the forearm lies nearly flat across the front of the
+# body -- just grazing it -- and the picking-arm IK flexes the elbow ~9 deg across a
+# chord strum (the forearm swinging on that near-fixed elbow) while the shoulder stays
+# nearly still, and tiny single-note picks barely move the arm at all.
 ANCHOR_LOCAL = (0.0, fret_layout.PLUCK_Y, fret_layout.STRING_Z)
-ANCHOR_WORLD = (-0.02, -0.195, 1.00)
+ANCHOR_WORLD = (-0.02, -0.195, 1.05)
 
 HOLDER_NAME = "GuitarRig"
 STRAP_NAME = "GuitarStrap"
@@ -105,16 +107,17 @@ STRAP_NAME = "GuitarStrap"
 # Picking-arm elbow pole. Two jobs. (1) With the guitarist's default rest pole (which
 # points BEHIND the player) the two-bone arm IK swings the elbow behind the thin guitar
 # body and the forearm spears straight through it; this pole pulls the elbow to the
-# FRONT so the whole forearm instead drapes over the front of the body down onto the
-# strings. (2) It also picks WHERE on the elbow's reachable circle the joint sits -- out
-# to the side and a touch forward -- so the bent elbow stays clear of the body face
-# across the take (worst graze ~1 cm) rather than poking into it. Note the pole only
-# rotates the elbow about the shoulder->wrist axis; the elbow's BEND (and thus its
-# ability to drive the strum) comes from the guitar height above, not from here. Keyed
-# per side; only the picking (R) arm needs it -- the fretting (L) arm rides up the neck,
-# clear of the body. Overrides only the playing shot; build_guitarist's free-standing
-# rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.3, -0.2, 1.3)}
+# FRONT so the forearm instead lies over the front of the body toward the strings.
+# (2) It picks WHERE on the elbow's reachable circle the joint sits: parked LOW (near
+# the guitar's upper-bout edge) so the forearm lies nearly HORIZONTAL across the body
+# and just grazes it (~0-2 cm the whole take) -- the forearm resting on the guitar, the
+# low elbow acting as a near-fixed strumming pivot -- instead of the elbow riding high
+# with the forearm dropping steeply to the strings. Note the pole only rotates the elbow
+# about the shoulder->wrist axis; the elbow's BEND (its ability to drive the strum) comes
+# from the guitar height above, not from here. Keyed per side; only the picking (R) arm
+# needs it -- the fretting (L) arm rides up the neck, clear of the body. Overrides only
+# the playing shot; build_guitarist's free-standing rest pose is left untouched.
+ELBOW_POLE_OVERRIDE = {"R": (-0.6, -0.5, 0.2)}
 # The guitar, strap and (via the chest, which passively inherits it) the shoulders
 # all ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"
