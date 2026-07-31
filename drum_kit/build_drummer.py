@@ -1,0 +1,806 @@
+"""Builds a blocky, faceless, minimalist humanoid drummer to sit in for a
+real character model later on.
+
+Run inside Blender AFTER build_drum_kit.py to create a "Drummer" collection:
+a single ``Drummer`` armature (average adult proportions, seated at the kit)
+with rigid box meshes on every bone, drumsticks held in the hands, shoes on
+the feet, and a simple throne.
+
+Why a body at all: the sticks must pivot about the drummer's shoulders (the
+seat is the centre of lateral rotation), so a stick reaching the floor tom
+swings out from the shoulder instead of staying pointed at the audience. Each
+arm has a wrist joint: a two-bone IK chain (upper arm + forearm) reaches a
+``Wrist_*`` empty, and a separate ``hand.*`` bone carrying the drumstick
+Damped-Tracks the ``IK_Hand_*`` (stick-tip) empty. So the elbow hangs at a
+natural height while the wrist angles the stick down onto the head -- without
+the wrist joint the rigid stick-arm over-folds on close drums and the elbow
+rides up at shoulder level. The animator moves the tip empty to each strike
+point (and derives the wrist from it via ``wrist_target``); Blender's IK solves
+the shoulder, elbow and wrist, so the whole arm reorients toward each target.
+
+Because the reach is solved by IK, the animation is authored purely as
+*target areas to hit at target velocities* (the planner's strike points and
+MIDI velocities). Swap ``ANTHRO`` for a different body and the same targets
+re-solve against the new proportions -- the point of a stand-in rig.
+
+Feet: ``foot.L`` / ``foot.R`` bones carry the shoes and press the pedals; the
+animator rotates the ankles (and the matching footboards) for kicks and hats.
+
+Usage (Blender Python console / MCP execute_blender_code)::
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "build_drummer", "/path/to/drum_kit/build_drummer.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.build_drummer()
+"""
+
+import math
+
+import bpy
+import bmesh
+import mathutils
+
+try:
+    from . import kit_layout
+except ImportError:  # loaded as a loose script via importlib
+    import os
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import kit_layout
+
+V = mathutils.Vector
+
+# ---------------------------------------------------------------------------
+# Body proportions (average adult, metres). Swap this dict to re-shape the
+# stand-in; the arms are IK so the drum targets re-solve automatically.
+# ---------------------------------------------------------------------------
+# Average adult proportions from the Drillis & Contini / Winter anthropometric
+# tables (segment length as a fraction of stature H), for H = 1.75 m:
+#   upper arm 0.186 H, forearm 0.146 H, thigh 0.245 H, shank 0.246 H,
+#   biacromial (shoulder) breadth 0.259 H, head height ~0.130 H.
+_H = 1.75
+ANTHRO = {
+    "upper_arm": 0.186 * _H,      # 0.326  shoulder -> elbow
+    "forearm": 0.146 * _H,        # 0.256  elbow -> wrist
+    "stick": 0.406,               # 16" (standard 5A drumstick)
+    "thigh": 0.245 * _H,          # 0.429  hip -> knee
+    "shin": 0.246 * _H,           # 0.431  knee -> ankle
+    "shoulder_dx": 0.259 * _H / 2.0,   # 0.227  half biacromial breadth
+    "hip_dx": 0.10,               # half hip-joint spacing
+    "arm_thick": 0.06,
+    "leg_thick": 0.10,
+    "torso_w": 0.34, "torso_d": 0.21,
+    "head": (0.155, 0.20, 0.130 * _H),  # breadth, depth, height (~0.228)
+    "stick_r": 0.0075,            # ~15 mm dia, a real stick
+}
+
+# Seated joint positions (world, metres). The drummer sits at +Y facing -Y;
+# left = +X, right = -X. Feet land on the kick (x=0) and hi-hat (x~0.55)
+# pedals; hips sit behind on a throne; shoulders lean slightly in over the kit.
+POSE = {
+    # Seated high enough that the drums sit below the shoulders, so the arms
+    # angle down to play (hands well below shoulder height, relaxed).
+    "pelvis":     (0.0, 0.82, 0.60),
+    "chest":      (0.0, 0.81, 1.12),   # upper spine essentially vertical over the
+    "neck":       (0.0, 0.81, 1.21),   # hips so the drummer sits upright; the
+    "head_top":   (0.0, 0.80, 1.44),   # forward lean is added only to reach (§torso)
+    "shoulder_y": 0.72, "shoulder_z": 1.20,
+    # Knees are solved from the anthropometric thigh/shin lengths (see
+    # _solve_knee), so only the hip and the pedal-planted ankles are fixed here.
+    # The feet rest with the BALL of the foot on the pedal, sat BACK from the very
+    # toe of each footboard (+Y, toward the drummer, and -- on the yawed hi-hat
+    # pedal -- along the board's heading). Planting the toe right at the front of
+    # the board jammed each shoe into the pedal linkage that lives there: the right
+    # toe box was skewered by the kick beater (its rod cocks back over the board),
+    # and the left toe sat inside the hi-hat stand post / pull-rod / near leg. Both
+    # boards are long enough (0.24 m) that the foot still sits on the board here.
+    "ankle_R":    (0.0, 0.50, 0.10),   # ball of foot on the kick footboard
+    "ankle_L":    (0.505, 0.558, 0.10),  # ball of foot on the hi-hat footboard
+    # Toes rest HIGHER than the ankles so the foot slopes up toward the toe,
+    # sitting flush on the up-sloped pedal footboards (see PEDAL_SLOPE). The left
+    # toe/ankle are shifted back ALONG the yawed hi-hat pedal heading (-X, +Y from
+    # the stand centre) so the foot stays aligned on the board while clearing the
+    # stand base at the front.
+    "toe_R":      (0.0, 0.32, 0.145),
+    "toe_L":      (0.505, 0.398, 0.145),
+    "throne":     (0.0, 0.90, 0.57),
+    # Elbow pole targets. Real drummers keep the elbows LOW and TUCKED to the
+    # sides, reaching with the forearm/wrist rather than lifting or winging the
+    # elbow. Far-out poles (way off to each side) winged the elbows outboard --
+    # the left splayed ~0.26 m past its shoulder on the backbeat, and the right
+    # rode up on cross-body reaches. Poles pulled IN close to the body, forward
+    # and just below, with the pole angles below, keep both elbows hanging at
+    # the sides across the whole kit (measured worst case still below the
+    # shoulder; mean outboard splay ~0). See RESEARCH.md "elbows hang / tuck".
+    "pole_R":     (-0.40, 1.00, -0.30),
+    "pole_L":     (0.20, 0.90, -0.30),
+}
+
+# Seat offset: shift the whole seated UPPER body (pelvis/spine/shoulders/head/
+# throne) toward the hi-hat side (+X) and slightly forward (-Y) so the cross-body
+# reaches shorten and the arms play with lower, more folded elbows (like a real
+# player set close to the kit). The FEET stay planted on their pedals and the
+# knees re-solve, so only the seat moves, not the kick/hi-hat pedal geometry.
+SEAT_DX = 0.04
+SEAT_DY = -0.02
+# Yaw the seated TORSO (chest/shoulders/neck/head) about the vertical axis through
+# the pelvis so the upper body faces the snare / hi-hat side (both on +X here)
+# instead of squaring up to the kick -- the standard drum-ergonomics setup. Only
+# the torso twists: the hips/legs stay square to the pedals (see _seat_sq), just
+# like a real player who turns their upper body but keeps their feet planted.
+SEAT_YAW = math.radians(18.0)
+_SEAT_PIVOT_Y = 0.82          # pelvis Y: the vertical axis the WHOLE body turns about
+
+
+def _seat_sq(p):
+    """Seat map without yaw: the seat OFFSET only. Used for the round throne (a
+    symmetric seat needs no facing) and anything meant to stay square to the kit."""
+    return (p[0] + SEAT_DX, p[1] + SEAT_DY, p[2])
+
+
+def _seat(p):
+    """Body seat map: YAW the point about the vertical axis through the pelvis so
+    the whole body -- pelvis, hips and legs as well as the torso/shoulders/head --
+    faces the snare, then apply the seat offset. The FEET are placed at the raw
+    pedal positions (not seated), so yawing the hips only splays the thighs to the
+    pedals and the knees re-solve; the feet stay planted."""
+    dx, dy = p[0], p[1] - _SEAT_PIVOT_Y
+    c, s = math.cos(SEAT_YAW), math.sin(SEAT_YAW)
+    rx = dx * c - dy * s
+    ry = dx * s + dy * c + _SEAT_PIVOT_Y
+    return (rx + SEAT_DX, ry + SEAT_DY, p[2])
+
+# Per-arm IK elbow pole angle. The arms reach different targets (the right
+# crosses the body far more), so they are not mirror-symmetric; these angles
+# roll each elbow down and in so it hangs tucked below the shoulder, and remove
+# the frame-to-frame elbow "snap" the old raised pose caused mid-fill. The
+# poles sit *behind* the shoulder (pole y > shoulder y) so the elbow hangs back,
+# not forward across the chest (the over-flexed rest pose we saw at frame 1).
+# L raised 45->100 so the left elbow hangs back-and-down (behind the slim chest)
+# through the raised wind-up instead of riding forward into the chest box. (The
+# left pole is also parented to the chest -- see _add_targets -- so the torso
+# twist can't flip the idle elbow inboard.)
+POLE_ANGLE = {"L": math.radians(100.0), "R": math.radians(130.0)}
+# Knee pole angles (per leg) for the leg IK, tuned so the IK reproduces the
+# square-to-pedal rest legs from _solve_knee.
+LEG_POLE_ANGLE = {"L": math.radians(70.0), "R": math.radians(-10.0)}
+
+# --- Joint range-of-motion limits (AAOS human norms; see RESEARCH.md) --------
+# The ELBOW is a true 1-DOF hinge, so it gets real anatomical limits: flexion
+# 0-150 deg (never past ~30 deg interior) and no hyperextension (stops just shy
+# of straight). Applied on the forearm bone's IK hinge (local Z) below.
+ELBOW_FLEX_MIN = 30.0     # tightest interior angle (150 deg flexion)
+ELBOW_STRAIGHT = 178.0    # interior at full extension (0 deg, no hyperextension)
+
+# The SHOULDER (upper_arm) is positioned by the IK target + pole, so its
+# orientation is a consequence of where the drum is; the WRIST (hand) is aimed
+# at the stick tip by a Damped Track. Neither is a free DOF, so instead of tight
+# symmetric caps (which would forbid the large but real cross-body reach to the
+# hi-hat) we cage each in a human-plausible envelope, per side, in the bone's
+# local IK frame. These contain the natural seated + cross-arm motion with
+# margin, so they block anatomically-impossible IK branches (e.g. the shoulder
+# over-rotating the elbow across the chest, as at frame 1 before) without
+# binding normal play. Degrees, (min, max) about local X, Y, Z.
+SHOULDER_IK_LIMIT = {
+    "L": {"x": (-91.0, 84.0), "y": (-90.0, 17.0), "z": (-16.0, 114.0)},
+    "R": {"x": (-94.0, 122.0), "y": (-55.0, 177.0), "z": (-103.0, 100.0)},
+}
+# Loose human-wrist envelope (deg, local X/Y/Z). The stick ATTITUDE is now set
+# upstream by the pitched grip in wrist_target (the real fix for the earlier
+# "strange" stick angles), so these only need to bound gross twist without
+# clamping the authored strokes -- their ranges are the observed play range plus
+# margin, and are kept wide on the left hand, whose local-Euler frame gimbals
+# through the cross-body tom reaches.
+# Shared human-wrist envelope (deg, local X/Y/Z), IDENTICAL on both hands for
+# consistency. Both hand bones are rolled to the same reference (local Z up, see
+# _build_skeleton), so one envelope means the same thing on each side. It contains
+# the full observed play range with margin -- wider on Z, where the left's cross-
+# body snare reach twists the wrist most -- so it bounds gross extremes without
+# clamping the (primarily vertical) strokes. (An earlier tight, per-side limit
+# clamped the raised left apex and flung the stick sideways, because the left hand
+# had inherited a sideways-rolled reference frame ~60 deg off the right's.)
+_WRIST_ENVELOPE = {"x": (-90.0, 55.0), "y": (-40.0, 55.0), "z": (-140.0, 35.0)}
+WRIST_ROT_LIMIT = {"L": dict(_WRIST_ENVELOPE), "R": dict(_WRIST_ENVELOPE)}
+
+# Elbow rest bend (degrees), filled in while building; used to place the IK
+# flexion limit just short of straight so the elbow cannot hyperextend.
+_REST_BEND = {}
+
+
+def _yaw_left_foot():
+    """Point the left foot along the ergonomically angled hi-hat pedal, so the
+    shoe sits flat on it. The pedal is yawed about its TOE (the stand centre),
+    so the foot follows by rotating the ANKLE about the toe -- the toe stays at
+    the stand while the heel/ankle swing toward the drummer."""
+    a = kit_layout.HIHAT_PEDAL_YAW
+    tx, ty, tz = POSE["toe_L"]
+    dx, dy = POSE["ankle_L"][0] - tx, POSE["ankle_L"][1] - ty
+    POSE["ankle_L"] = (tx + dx * math.cos(a) - dy * math.sin(a),
+                       ty + dx * math.sin(a) + dy * math.cos(a), POSE["ankle_L"][2])
+
+
+_yaw_left_foot()
+
+
+def shoulder(side):
+    dx = ANTHRO["shoulder_dx"] * (1 if side == "L" else -1)
+    return _seat((dx, POSE["shoulder_y"], POSE["shoulder_z"]))
+
+
+def _solve_knee(hip, ankle, toe, thigh_len, shin_len):
+    """Place the knee so the thigh and shin bones are exactly their
+    anthropometric lengths for a seated leg (hip and ankle fixed, on the pedal),
+    with the knee in the PEDAL'S VERTICAL PLANE -- the vertical plane through the
+    ankle along the foot's heading. That makes the shin line up straight down the
+    pedal (leg square to it) rather than the knee jutting off to the side, while
+    the thigh is free to splay from the hip out to the pedal."""
+    H, A, T = V(hip), V(ankle), V(toe)
+    d = (A - H).length
+    if d >= thigh_len + shin_len or d < 1e-6:      # can't bend: point along line
+        return tuple(H + (A - H) * (thigh_len / max(d, 1e-6)))
+    a = (d * d + thigh_len ** 2 - shin_len ** 2) / (2.0 * d)
+    r = math.sqrt(max(0.0, thigh_len ** 2 - a ** 2))
+    axis = (A - H) / d
+    C = H + a * axis                                # centre of the knee circle
+    tmp = V((0.0, 0.0, 1.0)) if abs(axis.z) < 0.9 else V((1.0, 0.0, 0.0))
+    e1 = (tmp - tmp.dot(axis) * axis).normalized()  # circle plane basis
+    e2 = axis.cross(e1)
+    ped = V((T[0] - A[0], T[1] - A[1], 0.0))        # pedal heading (horizontal)
+    if ped.length < 1e-6:
+        ped = V((0.0, -1.0, 0.0))
+    ped.normalize()
+    n = V((-ped.y, ped.x, 0.0))                     # normal of the pedal's vert. plane
+    # Knee on the circle with (knee - ankle).n == 0  ->  B1 cos + B2 sin = -A0
+    A0 = (C - A).dot(n); B1 = r * e1.dot(n); B2 = r * e2.dot(n)
+    Rm = math.hypot(B1, B2)
+    if Rm > 1e-9 and abs(A0) <= Rm:
+        phi = math.atan2(B2, B1); ac = math.acos(max(-1.0, min(1.0, -A0 / Rm)))
+        cands = [C + r * (math.cos(t) * e1 + math.sin(t) * e2)
+                 for t in (phi + ac, phi - ac)]
+    else:                                           # plane out of reach: nearest bulge
+        perp = (ped - ped.dot(axis) * axis)
+        cands = [C + r * perp.normalized()] if perp.length > 1e-6 else [C + r * e1]
+    aim = V((ped.x, ped.y, 0.0)) + V((0.0, 0.0, 1.2))   # prefer knee forward + up
+    return tuple(max(cands, key=lambda k: (k - C).dot(aim)))
+
+
+# --- wrist joint + grip ----------------------------------------------------
+# The stick is NOT collinear with the forearm: the arm IK reaches the WRIST
+# (the grip), and a separate hand/stick bone aims at the drum. The stick is held
+# near its butt end, with only a tiny bit overhanging behind the fist, so almost
+# the whole stick (grip->tip) is the working length that swings at the drum.
+STICK_BUTT = 0.03                                 # grip -> butt: small overhang
+STICK_LEN = ANTHRO["stick"] - STICK_BUTT          # grip -> tip (nearly all of it)
+ARM_REACH = ANTHRO["upper_arm"] + ANTHRO["forearm"]
+REACH_SOFT = ARM_REACH - 0.02                     # keep the wrist comfortably in reach
+# The wrist sits BACK (+Y, toward the drummer) and a little UP from the tip, so
+# the stick lies shallow across the surface (~20 deg) - a glancing stroke where
+# the side of the tip grazes the head, not a straight-down stab.
+WRIST_DIR = mathutils.Vector((0.0, 0.94, 0.34)).normalized()
+# How much of the grip placement is the shallow back-and-up direction vs. the
+# in-line "toward the shoulder" direction (0..1). Lower keeps the wrist nearer a
+# natural cock; see wrist_target.
+WRIST_BACK = 0.3
+
+# Stick attitude (pitch of the shaft, grip->tip, above horizontal). Two regimes:
+#   - Drums struck from above (snare, and the toms): the stick sits nearly LEVEL,
+#     angled just slightly DOWN, hovering over the head. The bead-up grip would
+#     otherwise place the wrist a stick-length BELOW and behind the head -- fine
+#     for a cymbal out in the open, but the rack toms are mounted high with their
+#     shells right under the head, so that low grip drives the shaft straight
+#     THROUGH the tom shell to reach the tip on top (Tom2 was skewered ~0.09 m
+#     deep at the mid-tom contact). Pitching the stick slightly down instead lifts
+#     the grip to just above the tom's rim so the shaft clears the shell; the bead
+#     points a little downward only at the moment of the strike, which is fine.
+#   - Open cymbals reached up/across (hats, crashes): the bead points UP. It is
+#     more ergonomic, the hand rides LOW with the stick angled up to the cymbal
+#     (not hovering above and tapping down), and a real strike's rebound flicks the
+#     tip back up -- captured here as an up-pitched rest the wrist rotates from.
+#   - The RIDE wants that same low-hand/stick-up look, but it is a big, nearly flat
+#     disc and its bow is struck INBOARD (not out in the open), so a full +28 deg
+#     up-pitch drops the grip so far below the bead that the shaft rakes UP UNDER
+#     the tilted disc's low near lip to reach the bow (it dove ~0.056 m under). The
+#     disc physically overhangs a steep upstroke. The steepest up-pitch whose shaft
+#     still CLEARS the ride while keeping the hand below the bead is ~+10 deg, so
+#     the ride gets its own shallower bead-up attitude rather than the crash's +28.
+STICK_PITCH_FLAT = math.radians(-8.0)
+STICK_PITCH_UP = math.radians(28.0)
+STICK_PITCH_RIDE = math.radians(10.0)   # bead-up but shallow: hand below the bead,
+                                        # yet the shaft clears the flat ride disc
+STICK_PITCH_IDLE = math.radians(-6.0)   # a resting hand hovers ready over the kit,
+                                        # bead just forward-and-down -- not reared up
+                                        # over the hats, not folded bead-down by the
+                                        # body (see _idle_tip)
+# Voices played from above (slightly bead-down): the snare and the toms, so their
+# grips ride above the shell instead of the up-pitched stick clipping through it.
+FLAT_VOICES = {"snare", "side_stick", "tom_floor", "tom_mid", "tom_hi"}
+# The ride bow/bell: a low-hand bead-up stroke, but shallow so the shaft clears the
+# overhanging disc (see above). Everything else open gets the full bead-up pitch.
+RIDE_VOICES = {"ride", "ride_bell"}
+
+
+def stick_pitch(voice):
+    """Desired stick pitch (rad, grip->tip above horizontal) for a voice."""
+    if voice in FLAT_VOICES:
+        return STICK_PITCH_FLAT
+    if voice in RIDE_VOICES:
+        return STICK_PITCH_RIDE
+    return STICK_PITCH_UP
+
+
+def home_voice(side):
+    """The convention home voice each hand rests over (matches _rest_tip)."""
+    return "hihat_closed" if side == "R" else "snare"
+
+
+def wrist_target(shoulder_pos, tip_pos, pitch=None):
+    """Where the wrist (grip) sits so the stick tip lands on `tip_pos`.
+
+    When `pitch` is given, the grip is placed one stick-length back down a shaft
+    held at that pitch (bead above/below the grip) with the horizontal heading
+    running from the shoulder out to the drum -- so the stick sits level-ish over
+    the snare/floor tom but bead-up on everything else. If that grip is out of
+    reach (a far cross-body target), we fall through to the reach-pull below.
+
+    Otherwise (pitch=None): the wrist is STICK_LEN back-and-up from the tip
+    (WRIST_DIR), giving a shallow stick, and if that point is within reach we use
+    it. If it is out
+    of reach (a far cross-body target like the hi-hat), we pull the wrist IN
+    along the tip->shoulder line instead of sliding it onto the far reach
+    boundary: that is the closest the grip can get to the shoulder while still
+    holding the stick, so |shoulder - wrist| is minimised and the elbow keeps a
+    relaxed bend rather than locking straight to a distant grip. (Placing the
+    wrist on the reach boundary instead left the arm ~97% extended -- a stiff,
+    locked-out reach; pulling it in bends the elbow to a natural ~120 deg.)
+    |wrist - tip| == STICK_LEN always, so the hand bone that aims from the wrist
+    at the tip still lands exactly."""
+    S = mathutils.Vector(shoulder_pos)
+    P = mathutils.Vector(tip_pos)
+    if pitch is not None:
+        # Grip = one stick-length back down a shaft held at `pitch`. Horizontal
+        # heading runs from the shoulder out to the drum; +pitch lifts the bead.
+        # As the pitch drops, the grip rises toward the (high) shoulder, so reach
+        # shrinks monotonically until the grip points straight at the shoulder.
+        # If the ideal pitch is out of reach, we therefore lower the pitch only as
+        # far as anatomy forces -- taking the HIGHEST reachable stick -- rather
+        # than diving the grip to the shoulder (which jabs the bead steeply down).
+        h = mathutils.Vector((P.x - S.x, P.y - S.y, 0.0))
+        h = h.normalized() if h.length > 1e-6 else mathutils.Vector((0.0, -1.0, 0.0))
+        up = mathutils.Vector((0.0, 0.0, 1.0))
+        a = pitch
+        while a > math.radians(-85.0):
+            stick_dir = (math.cos(a) * h + math.sin(a) * up).normalized()
+            G = P - STICK_LEN * stick_dir          # |G - P| == STICK_LEN
+            if (S - G).length <= REACH_SOFT:
+                return tuple(G)
+            a -= math.radians(3.0)
+        # Even a steep stick can't reach (target beyond arm+stick): fall through
+        # to the shoulder-pull below.
+    SP = S - P
+    d = SP.length
+    if d < 1e-6:
+        return tuple(S)
+    u = SP / d
+    # Blend the shallow "back-and-up" grip direction (WRIST_DIR) with the
+    # "toward the shoulder" direction (u). Pure back-and-up put the grip far
+    # behind the tip, so on a close drum (the snare) the forearm doubled back
+    # and the wrist hyper-bent (~140 deg). Mixing in the shoulder direction
+    # keeps the grip roughly in line with the forearm, so the wrist sits at a
+    # natural cock (~30 deg, like the reference) while the stick still lies
+    # fairly shallow across the head.
+    direction = (WRIST_BACK * WRIST_DIR + (1.0 - WRIST_BACK) * u).normalized()
+    W = P + STICK_LEN * direction
+    if (S - W).length <= REACH_SOFT:
+        return tuple(W)
+    return tuple(P + STICK_LEN * u)  # far target: pull grip toward shoulder
+
+
+def _rest_tip(side):
+    """Where each stick tip hovers at rest: over its convention home."""
+    home = kit_layout.strike_point("hihat_closed" if side == "R" else "snare")
+    return (home[0], home[1], home[2] + 0.10)
+
+
+# A hand at a GENUINE rest (no note due for a while) does not keep hovering up over
+# its convention voice -- especially the RIGHT hand, whose voice is the hi-hat,
+# reached high and clear across the body: parked there it looks poised to play a
+# cymbal it has no intention of hitting. Instead an idle hand waits READY in front
+# of the drummer, out over the legs amid the kit: hovering just above the snare
+# (the central, forward drum), split a little to its own side, bead pointing
+# forward-and-down (STICK_PITCH_IDLE) so it can drop straight onto the next note
+# without a long reach. Anchored to the snare + kit centre so it follows the kit
+# layout, NOT tucked back by the body or reared over the hats.
+IDLE_Y = 0.25             # forward -- out over the knees / front of the kit. The bead
+                          # rests here so the grip (a stick-length BACK from it) still
+                          # sits AHEAD of the body and the arm reaches forward rather
+                          # than folding the forearm back by the hip (tuned to the IK:
+                          # further back than this and the right elbow solves in front
+                          # of the wrist, bending the arm behind the drummer).
+IDLE_Z = 0.72             # ready hover height, just above the snare head
+IDLE_HALF = 0.16          # each hand waits this far to its own side of centre, m
+IDLE_CENTRE_X = 0.06      # centre-line the two resting hands straddle (over the lap)
+
+
+def _idle_tip(side):
+    """Ready resting spot for an idle hand: hovering in front of the drummer out
+    over the legs amid the kit, offset to the hand's own side, bead forward-and-down
+    so it can drop straight onto the next note (see notes above and _rest_tip)."""
+    out = -IDLE_HALF if side == "R" else IDLE_HALF    # R side is -X, L side is +X
+    return (IDLE_CENTRE_X + out, IDLE_Y, IDLE_Z)
+
+
+# ---------------------------------------------------------------------------
+# Materials + meshes
+# ---------------------------------------------------------------------------
+def _mat(name, color, rough, metallic=0.0):
+    m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    m.use_nodes = True
+    b = m.node_tree.nodes.get("Principled BSDF")
+    b.inputs["Base Color"].default_value = (*color, 1.0)
+    b.inputs["Roughness"].default_value = rough
+    b.inputs["Metallic"].default_value = metallic
+    return m
+
+
+def _box(name, sx, sy, sz, bevel=0.006):
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=(sx, sy, sz), verts=bm.verts)
+    if bevel:
+        bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, segments=2, affect='EDGES')
+    bm.to_mesh(mesh); bm.free()
+    return mesh
+
+
+def _stick_mesh(name, length, r=0.011):
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    c = bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=12,
+                              radius1=r, radius2=r * 0.55, depth=length)
+    # cone is built along +Z; lay it along -Y (toward the tail/tip) and centre
+    bmesh.ops.rotate(bm, verts=c["verts"],
+                     matrix=mathutils.Matrix.Rotation(math.radians(90), 3, 'X'))
+    bmesh.ops.translate(bm, verts=c["verts"], vec=(0, -length / 2.0, 0))
+    bead = bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=6, radius=r * 1.3)
+    bmesh.ops.translate(bm, verts=bead["verts"], vec=(0, 0, 0))
+    bm.to_mesh(mesh); bm.free()
+    return mesh
+
+
+def _shoe_mesh(name):
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=(0.09, 0.24, 0.06), verts=bm.verts)
+    bmesh.ops.bevel(bm, geom=bm.edges[:], offset=0.014, segments=2, affect='EDGES')
+    bm.to_mesh(mesh); bm.free()
+    return mesh
+
+
+def _part(arm, coll, mat, bone, name, location, size=None, rotation=(0, 0, 0), mesh=None):
+    """A rigid box (or supplied mesh) parented to `bone`. Bone-parent space has
+    its origin at the bone tail with local -Y running toward the head."""
+    if mesh is None:
+        mesh = _box(name + "Mesh", *size)
+    obj = bpy.data.objects.new(name, mesh)
+    coll.objects.link(obj)
+    obj.parent = arm
+    obj.parent_type = 'BONE'
+    obj.parent_bone = bone
+    obj.location = location
+    obj.rotation_euler = rotation
+    obj.data.materials.append(mat)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Armature
+# ---------------------------------------------------------------------------
+def _build_skeleton(coll):
+    arm_data = bpy.data.armatures.new("DrummerRig")
+    arm = bpy.data.objects.new("Drummer", arm_data)
+    coll.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = arm_data.edit_bones
+
+    def bone(name, head, tail, parent=None, connect=False):
+        b = eb.new(name)
+        b.head, b.tail = V(head), V(tail)
+        if parent is not None:
+            b.parent = parent
+            b.use_connect = connect
+        return b
+
+    # A static PELVIS root carries both the (animated) spine and the legs, so the
+    # torso can twist/lean without dragging the legs off the pedals -- rotation
+    # lives entirely in the spine (upper body), the legs hang off the still hips.
+    px, py, pz = _seat(POSE["pelvis"])
+    pelvis = bone("pelvis", (px, py, pz), (px, py, pz + 0.08))
+    # The whole body faces the snare: the pelvis/hips yaw with the torso, and the
+    # spine runs from the yawed pelvis up to the yawed chest.
+    spine = bone("spine", _seat(POSE["pelvis"]), _seat(POSE["chest"]), pelvis, False)
+    chest = bone("chest", _seat(POSE["chest"]), _seat(POSE["neck"]), spine, True)
+    neck_head = _seat(POSE["neck"])
+    neck = bone("neck", neck_head, (neck_head[0], neck_head[1] - 0.02,
+                                    neck_head[2] + 0.06), chest, True)
+    bone("head", neck.tail, _seat(POSE["head_top"]), neck, True)
+
+    for side in ("L", "R"):
+        s = V(shoulder(side))
+        outx = 1.0 if side == "L" else -1.0
+        tip = V(_rest_tip(side))
+        wrist = V(wrist_target(tuple(s), tuple(tip), stick_pitch(home_voice(side))))
+        # Rest elbow: down and out from the shoulder, exactly upper_arm long.
+        edir = V((0.55 * outx, -0.10, -0.83)).normalized()
+        elbow = s + edir * ANTHRO["upper_arm"]
+        # forearm elbow->wrist (length ANTHRO forearm); hand wrist->tip (STICK_LEN)
+        fdir = (wrist - elbow)
+        fdir = fdir.normalized() if fdir.length > 1e-6 else V((0.0, -1.0, 0.0))
+        wrist_bone = elbow + fdir * ANTHRO["forearm"]
+        hdir = (tip - wrist_bone)
+        hdir = hdir.normalized() if hdir.length > 1e-6 else V((0.0, -1.0, 0.0))
+        clav = bone(f"clav.{side}", _seat(POSE["neck"]), tuple(s), chest, False)
+        up = bone(f"upper_arm.{side}", tuple(s), tuple(elbow), clav, False)
+        fore = bone(f"forearm.{side}", tuple(elbow), tuple(wrist_bone), up, True)
+        hand_b = bone(f"hand.{side}", tuple(wrist_bone),
+                      tuple(wrist_bone + hdir * STICK_LEN), fore, True)
+        # Give BOTH hands the same wrist reference frame -- local Z up -- so the
+        # `LIMIT_ROTATION` wrist envelope means the same thing on each side (the
+        # left otherwise inherited a sideways-rolled frame from its forearm, which
+        # offset its local-Euler range ~60 deg from the right's and made a shared
+        # limit clamp its strokes). The stick (bone Y) and its round mesh are
+        # unchanged by this roll.
+        hand_b.align_roll(V((0.0, 0.0, 1.0)))
+        # Align the forearm roll so its local Z is the elbow's hinge axis
+        # (perpendicular to the rest arm plane); the IK limits below then make
+        # the elbow a one-way hinge that cannot twist or bend backwards.
+        hinge = (elbow - s).cross(wrist_bone - elbow)
+        if hinge.length > 1e-6:
+            fore.align_roll(hinge.normalized())
+        _REST_BEND[side] = math.degrees((elbow - s).angle(wrist_bone - elbow))
+
+        hip = _seat((ANTHRO["hip_dx"] * (1 if side == "L" else -1),
+                     POSE["pelvis"][1], POSE["pelvis"][2]))
+        knee = _solve_knee(hip, POSE[f"ankle_{side}"], POSE[f"toe_{side}"],
+                           ANTHRO["thigh"], ANTHRO["shin"])
+        thigh = bone(f"thigh.{side}", hip, knee, pelvis, False)  # off the STATIC pelvis
+        shin = bone(f"shin.{side}", knee, POSE[f"ankle_{side}"], thigh, True)
+        foot = bone(f"foot.{side}", POSE[f"ankle_{side}"], POSE[f"toe_{side}"], shin, True)
+        # Align each foot's roll so local +Z points up. Both feet then share a
+        # predictable frame (regardless of the pedal yaw), so a single ankle
+        # press sign lowers the toe on either foot.
+        foot.align_roll(V((0.0, 0.0, 1.0)))
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for pb in arm.pose.bones:
+        pb.rotation_mode = 'XYZ'
+    return arm
+
+
+def _add_targets(coll, arm):
+    """Target empties and constraints: the forearm IK reaches the WRIST empty,
+    and the hand bone Damped-Tracks the IK_Hand (stick tip) empty, so the stick
+    always aims at the drum while the elbow hangs freely."""
+    empties = {}
+    for side in ("L", "R"):
+        tip = _rest_tip(side)
+        for tag, pos in (("IK_Hand", tip),
+                         ("Wrist", wrist_target(shoulder(side), tip,
+                                                stick_pitch(home_voice(side)))),
+                         ("Pole", POSE[f"pole_{side}"])):
+            e = bpy.data.objects.new(f"{tag}_{side}", None)
+            e.empty_display_size = 0.05
+            e.location = pos
+            coll.objects.link(e)
+            empties[f"{tag}_{side}"] = e
+
+    # The LEFT elbow pole tracks the torso: parent it to the chest bone so a spine
+    # twist (toward the ride/cymbals in the ending bars) turns the pole WITH the
+    # arm base, keeping the two-bone IK on its outboard elbow solution. A world-
+    # fixed pole let the twist rotate the arm past the IK solution bifurcation,
+    # flipping the IDLE left elbow inboard into the chest even with no note playing.
+    # (The right pole stays world-fixed; its far cross-body reach is pole-tuned.)
+    # Its intended WORLD position is restored in build_drummer once the pose is
+    # evaluated -- a bone-parent matrix_world set here lands before the chest bone
+    # matrix exists.
+    polL = empties["Pole_L"]
+    polL["pole_world"] = tuple(polL.location)
+    polL.parent = arm
+    polL.parent_type = 'BONE'
+    polL.parent_bone = "chest"
+
+    for side in ("L", "R"):
+        pbF = arm.pose.bones[f"forearm.{side}"]
+        ik = pbF.constraints.new('IK')
+        ik.target = empties[f"Wrist_{side}"]
+        ik.pole_target = empties[f"Pole_{side}"]
+        ik.pole_angle = POLE_ANGLE[side]
+        ik.chain_count = 2
+        # Elbow = a one-way hinge: no twist (Y) or sideways bend (X); flexion
+        # (local Z) may fold freely but stops ~3 deg short of straight so the
+        # forearm can never bend backwards (+Z straightens; the rest is bent
+        # _REST_BEND deg, so straight is at 180 - _REST_BEND).
+        pbF.lock_ik_x = True
+        pbF.lock_ik_y = True
+        pbF.use_ik_limit_z = True
+        # Human elbow: fold to 150 deg flexion (interior ELBOW_FLEX_MIN), extend
+        # to just shy of straight (no hyperextension). Limits are relative to the
+        # rest bend, so interior = limit + _REST_BEND.
+        pbF.ik_min_z = math.radians(ELBOW_FLEX_MIN - _REST_BEND[side])
+        pbF.ik_max_z = math.radians(ELBOW_STRAIGHT - _REST_BEND[side])
+
+        # Shoulder: cage the IK rotation to a human-plausible envelope so it can
+        # never over-rotate into an impossible pose (the pole is primary control).
+        pbU = arm.pose.bones[f"upper_arm.{side}"]
+        sl = SHOULDER_IK_LIMIT[side]
+        for axis in ("x", "y", "z"):
+            setattr(pbU, f"use_ik_limit_{axis}", True)
+            lo, hi = sl[axis]
+            setattr(pbU, f"ik_min_{axis}", math.radians(lo))
+            setattr(pbU, f"ik_max_{axis}", math.radians(hi))
+
+        dt = arm.pose.bones[f"hand.{side}"].constraints.new('DAMPED_TRACK')
+        dt.target = empties[f"IK_Hand_{side}"]
+        dt.track_axis = 'TRACK_Y'
+        # Wrist: after the stick aims at the tip, clamp the hand's local rotation
+        # to a human wrist envelope. Both hands share the SAME envelope (they are
+        # rolled to the same local-Z-up reference in _build_skeleton), so the limit
+        # is consistent across sides; it is sized to contain the full play range,
+        # so it bounds gross extremes without clamping the strokes (verified: the
+        # bead still tracks its target empty, and the wind-up stays vertical).
+        wl = WRIST_ROT_LIMIT[side]
+        if wl is not None:
+            lr = arm.pose.bones[f"hand.{side}"].constraints.new('LIMIT_ROTATION')
+            lr.owner_space = 'LOCAL'
+            for axis in ("x", "y", "z"):
+                setattr(lr, f"use_limit_{axis}", True)
+                lo, hi = wl[axis]
+                setattr(lr, f"min_{axis}", math.radians(lo))
+                setattr(lr, f"max_{axis}", math.radians(hi))
+
+    # --- Leg IK: the thigh+shin chain reaches an Ankle target so the knee can
+    # drive up and down (the heel-up kick technique) while the foot stays planted
+    # on its pedal. A Knee pole placed in the rest knee's bend direction keeps the
+    # IK reproducing the square-to-pedal rest leg (see _solve_knee).
+    for side in ("L", "R"):
+        H = arm.matrix_world @ arm.pose.bones[f"thigh.{side}"].bone.head_local
+        K = arm.matrix_world @ arm.pose.bones[f"shin.{side}"].bone.head_local
+        A = arm.matrix_world @ arm.pose.bones[f"shin.{side}"].bone.tail_local
+        axis = (A - H).normalized()
+        bend = (K - H) - (K - H).dot(axis) * axis      # knee offset off the hip-ankle line
+        bend = bend.normalized() if bend.length > 1e-6 else V((0.0, -1.0, 0.0))
+        for tag, pos in (("Ankle", tuple(A)), ("Knee", tuple(K + bend * 0.45))):
+            e = bpy.data.objects.new(f"{tag}_{side}", None)
+            e.empty_display_size = 0.05
+            e.location = pos
+            coll.objects.link(e)
+            empties[f"{tag}_{side}"] = e
+        pbS = arm.pose.bones[f"shin.{side}"]
+        ik = pbS.constraints.new('IK')
+        ik.target = empties[f"Ankle_{side}"]
+        ik.pole_target = empties[f"Knee_{side}"]
+        ik.pole_angle = LEG_POLE_ANGLE[side]
+        ik.chain_count = 2
+    return empties
+
+
+def _world_box(arm, coll, mat, name, center, size, rotation=(0, 0, 0)):
+    """An axis-aligned world box parented (object-level) to the armature -
+    for the static base (pelvis), which should not inherit a bone's tilt."""
+    obj = bpy.data.objects.new(name, _box(name + "Mesh", *size))
+    obj.location = center
+    obj.rotation_euler = rotation
+    coll.objects.link(obj)
+    obj.parent = arm
+    obj.matrix_parent_inverse = arm.matrix_world.inverted()
+    obj.data.materials.append(mat)
+    return obj
+
+
+def _bone_upright(arm, coll, mat, bone, name, center, size):
+    """An upright, world-aligned box that FOLLOWS a bone - so the torso/head
+    rotate with the spine while still reading as square boxes (not bone-tilted).
+    Parent to the bone, then stamp the desired upright world matrix; Blender
+    back-computes the local transform against the bone's rest pose."""
+    obj = bpy.data.objects.new(name, _box(name + "Mesh", *size))
+    coll.objects.link(obj)
+    obj.data.materials.append(mat)
+    obj.parent = arm
+    obj.parent_type = 'BONE'
+    obj.parent_bone = bone
+    bpy.context.view_layer.update()
+    obj.matrix_world = (mathutils.Matrix.Translation(V(center))
+                        @ mathutils.Matrix.Rotation(SEAT_YAW, 4, 'Z'))
+    return obj
+
+
+def _clothe(arm, coll):
+    skin = _mat("DrummerBody", (0.30, 0.33, 0.38), 0.6)      # neutral grey mock
+    dark = _mat("DrummerDark", (0.13, 0.14, 0.17), 0.6)
+    wood = _mat("StickWood", (0.80, 0.66, 0.44), 0.45)
+    rubber = _mat("ShoeRubber", (0.04, 0.04, 0.05), 0.6)
+
+    aw = ANTHRO["arm_thick"]
+    lw = ANTHRO["leg_thick"]
+    L1 = ANTHRO["upper_arm"]
+    fore, stick = ANTHRO["forearm"], ANTHRO["stick"]   # stick = total length
+
+    # Pelvis is the static base; the chest/neck/head follow the spine so the
+    # torso can twist toward the kit (they stay upright boxes via _bone_upright).
+    _bone_upright(arm, coll, dark, "pelvis", "Torso_Pelvis",
+                  _seat((0.0, 0.82, 0.66)), (0.34, 0.20, 0.32))
+    # A slim chest, set back a touch: the cross-arm reach to the hi-hat passes
+    # just in front of the torso, so a shallow (low y-depth), narrower chest
+    # sitting slightly behind the shoulders keeps the crossing arm outside it.
+    _bone_upright(arm, coll, skin, "spine", "Torso_Chest", _seat((0.0, 0.82, 0.98)), (0.32, 0.15, 0.34))
+    _bone_upright(arm, coll, skin, "neck", "Neck", _seat((0.0, 0.81, 1.18)), (0.09, 0.09, 0.10))
+    _bone_upright(arm, coll, skin, "head", "Head", _seat((0.0, 0.80, 1.31)), ANTHRO["head"])
+
+    for side in ("L", "R"):
+        _part(arm, coll, skin, f"upper_arm.{side}", f"UpperArm_{side}",
+              (0, -L1 / 2.0, 0), (aw, L1 * 0.92, aw))
+        # forearm bone: wrist(tail) -> elbow(head at -fore)
+        _part(arm, coll, skin, f"forearm.{side}", f"Forearm_{side}",
+              (0, -fore / 2.0, 0), (aw * 0.9, fore * 0.9, aw * 0.9))
+        # hand bone: tip(tail) -> grip(head at -STICK_LEN). The fist grips a
+        # third of the way up (butt overhangs behind it); the full stick runs
+        # tip(0) -> butt(-stick) and aims at the drum via the Damped Track.
+        _part(arm, coll, skin, f"hand.{side}", f"Hand_{side}",
+              (0, -STICK_LEN, 0), (aw * 1.15, 0.05, aw * 1.15))
+        _part(arm, coll, wood, f"hand.{side}", f"Stick_{side}",
+              (0, 0, 0), mesh=_stick_mesh(f"Stick_{side}Mesh", stick, ANTHRO["stick_r"]))
+
+        _part(arm, coll, dark, f"thigh.{side}", f"Thigh_{side}",
+              (0, -ANTHRO["thigh"] / 2.0, 0), (lw, ANTHRO["thigh"] * 0.92, lw))
+        _part(arm, coll, dark, f"shin.{side}", f"Shin_{side}",
+              (0, -ANTHRO["shin"] / 2.0, 0), (lw * 0.85, ANTHRO["shin"] * 0.92, lw * 0.85))
+        _part(arm, coll, rubber, f"foot.{side}", f"Shoe_{side}",
+              (0, -0.09, -0.02), mesh=_shoe_mesh(f"Shoe_{side}Mesh"))
+
+
+def _build_throne(coll):
+    seat = _mat("Throne", (0.10, 0.10, 0.12), 0.5)
+    tx, ty, tz = _seat_sq(POSE["throne"])
+    top = bpy.data.objects.new("Throne_Seat", _box("Throne_SeatMesh", 0.32, 0.32, 0.05))
+    top.location = (tx, ty, tz)
+    top.data.materials.append(seat); coll.objects.link(top)
+    post = bpy.data.objects.new("Throne_Post",
+                                _box("Throne_PostMesh", 0.05, 0.05, tz - 0.05, bevel=0))
+    post.location = (tx, ty, (tz - 0.02) / 2.0)
+    post.data.materials.append(seat); coll.objects.link(post)
+
+
+def build_drummer():
+    scene = bpy.context.scene
+    old = bpy.data.collections.get("Drummer")
+    if old is not None:
+        for o in list(old.objects):
+            bpy.data.objects.remove(o, do_unlink=True)
+        bpy.data.collections.remove(old)
+
+    coll = bpy.data.collections.new("Drummer")
+    scene.collection.children.link(coll)
+
+    arm = _build_skeleton(coll)
+    _add_targets(coll, arm)
+    _clothe(arm, coll)
+    _build_throne(coll)
+
+    bpy.context.view_layer.update()
+    # Restore the chest-parented left pole to its intended WORLD position now that
+    # the pose is evaluated (see _add_targets).
+    polL = bpy.data.objects.get("Pole_L")
+    if polL is not None and "pole_world" in polL:
+        polL.matrix_world = mathutils.Matrix.Translation(tuple(polL["pole_world"]))
+        bpy.context.view_layer.update()
+    print(f"Built drummer: armature '{arm.name}' with "
+          f"{len(arm.pose.bones)} bones, IK arms, sticks, shoes, throne")
+    return coll
+
+
+if __name__ == "__main__":
+    build_drummer()

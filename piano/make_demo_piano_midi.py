@@ -13,8 +13,14 @@ import struct
 import sys
 
 
-def write_midi(path, ticks_per_beat, tempo_us_per_beat, notes):
-    """notes: list of (start_tick, duration_tick, note, velocity)."""
+def write_midi(path, ticks_per_beat, tempo_us_per_beat, notes, channel=0):
+    """notes: list of (start_tick, duration_tick, note, velocity).
+
+    `channel` (0-15) is OR'd into the note-on/off status nibble; it defaults
+    to 0 so existing callers are unchanged. Pass channel=9 for General MIDI
+    percussion ("channel 10"). The animator's parse_midi masks the channel
+    away, so this only affects how the file auditions in a DAW.
+    """
     events = [(0, "tempo", tempo_us_per_beat, None)]
     for start, dur, note, vel in notes:
         events.append((start, "on", note, vel))
@@ -39,9 +45,9 @@ def write_midi(path, ticks_per_beat, tempo_us_per_beat, notes):
         if etype == "tempo":
             track += bytes([0xFF, 0x51, 0x03]) + struct.pack(">I", a)[1:]
         elif etype == "on":
-            track += bytes([0x90, a, b])
+            track += bytes([0x90 | channel, a, b])
         elif etype == "off":
-            track += bytes([0x80, a, b])
+            track += bytes([0x80 | channel, a, b])
     track += vlq(0) + bytes([0xFF, 0x2F, 0x00])
 
     header = b"MThd" + struct.pack(">IHHH", 6, 0, 1, ticks_per_beat)
