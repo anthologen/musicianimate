@@ -80,7 +80,16 @@ fret_layout = _load("fret_layout")
 #   * a chosen anchor point on the strings lands at ANCHOR_WORLD on the torso.
 # These few constants are the whole "how the guitar is worn" tuning surface.
 # ---------------------------------------------------------------------------
-NECK_ELEV = math.radians(23.0)     # neck rises this far above horizontal
+NECK_ELEV = math.radians(35.0)     # neck rises this far above horizontal
+# ^ Also the main comfort dial for the FRETTING WRIST. The fret hand's orientation
+# is locked to the guitar (it wraps the neck), so the only way to relax the left
+# wrist is to present that hand to the incoming forearm at a straighter angle. Worn
+# with the neck near-horizontal (23 deg) the fret hand sits low and forward, the
+# forearm reaches ACROSS to it and the wrist folds ~70 deg -- uncomfortably acute.
+# Angling the neck up rotates the whole guitar+hand assembly about the picking anchor
+# (all fret/pick contacts are preserved -- the assembly is rigid), lifting the fret
+# hand so the forearm rises UP to meet it: ~35 deg neck -> ~45 deg wrist, the relaxed
+# bend real players hold (cf. a moderately raised neck in reference photos).
 # Local point on the guitar (near the picking spot) pinned onto the body, and the
 # world spot on the guitarist's front-right torso it is pinned to. Height is a real
 # posture tradeoff for the PICKING arm (see _wire_arms / ELBOW_POLE_OVERRIDE):
@@ -114,10 +123,13 @@ STRAP_NAME = "GuitarStrap"
 # low elbow acting as a near-fixed strumming pivot -- instead of the elbow riding high
 # with the forearm dropping steeply to the strings. Note the pole only rotates the elbow
 # about the shoulder->wrist axis; the elbow's BEND (its ability to drive the strum) comes
-# from the guitar height above, not from here. Keyed per side; only the picking (R) arm
-# needs it -- the fretting (L) arm rides up the neck, clear of the body. Overrides only
+# from the guitar height above, not from here. Keyed per side. The picking (R) arm needs
+# it to keep the forearm off the body; the fretting (L) arm gets a gentler one that TUCKS
+# the elbow down and slightly forward (out of the default rest pole, which winged it up
+# behind and above the wrist -- forearm dropping onto the hand) so the forearm instead
+# rises up the neck to the hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only
 # the playing shot; build_guitarist's free-standing rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.6, -0.5, 0.2)}
+ELBOW_POLE_OVERRIDE = {"R": (-0.6, -0.5, 0.2), "L": (0.55, 0.1, 0.55)}
 # The guitar, strap and (via the chest, which passively inherits it) the shoulders
 # all ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"
