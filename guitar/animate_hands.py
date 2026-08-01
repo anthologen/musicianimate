@@ -19,8 +19,13 @@ built by guitar/build_hands.py:
     flattened index lies across the strings.
   - The PickHand object location sweeps the pick tip across the strings:
     each onset gets a windup / dip / cross / lift stroke through the
-    struck string's pluck point. Chords strum bass-to-treble across the
-    onset; fast single-note runs alternate down- and up-strokes.
+    struck string's pluck point. Onsets of 1-3 strings PICK (a tight,
+    low wrist flick); onsets of 4+ strings STRUM (the hand arcs clear of
+    the strings and sweeps a windup/follow-through, so the arm IK drives
+    the stroke from the elbow) -- and the strum's SIZE scales with velocity,
+    soft strums moving little and loud strums arcing high and wide. Chords
+    cross bass-to-treble across the onset; single-note runs alternate down-
+    and up-strokes.
   - Press timing mirrors the piano animator: velocity sets attack speed
     (loud = fast), with the same release tail.
 
@@ -74,7 +79,11 @@ DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
 DIST_FLEX_BARRE = 0.06         # flattened index while barring
 DIST_FLEX_BARRE_HOVER = 0.12
-PRESS_STAGGER = 0.013  # fret-slot y spread between fingers sharing a fret
+PRESS_STAGGER = 0.022  # fret-slot y spread between fingers sharing a fret -
+                       # a diagonal placement (lower finger farther behind the
+                       # wire) that keeps same-fret finger bodies from crossing
+                       # even when the wrist roll that would tilt them apart is
+                       # averaged out by the pose smoothing across a chord run
 
 # Per-event wrist rotation freedom, chosen by a grid search that
 # penalizes predicted finger-finger collisions (forward kinematics of
@@ -97,13 +106,45 @@ TOUCH_CLEAR = 0.012    # axis distance where finger boxes sit flush
 COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
 RETARGET_DIST = 0.006  # lateral move beyond which a finger curls up
                        # (relax pose) while travelling to its next spot
+SETTLE_LEAD = 0.30     # seconds a long-idle finger holds its relaxed pose
+                       # before lifting to hover - without it a finger whose
+                       # only nearby keyframes are a distant relax and this
+                       # press interpolates the whole gap, sweeping slowly
+                       # across its neighbours on the way in (a lone pinky
+                       # press dragged the pinky through the ring finger for
+                       # seconds)
 
 # --- pick hand -------------------------------------------------------------
-PICK_HOVER = 0.012     # pick tip above the string plane between strokes
+# Two right-hand gestures, chosen per onset by how many strings it strikes:
+#   * PICK  (1..STRUM_STRINGS-1 strings): a tight wrist/finger flick that barely
+#     clears the strings -- crisp for single notes and small partial chords.
+#   * STRUM (>= STRUM_STRINGS strings): the hand arcs clear of the strings and
+#     sweeps a windup/follow-through, so the guitarist's arm IK (which copies the
+#     PickHand wrist) drives the stroke from the elbow/shoulder across the whole
+#     string set, the way a real player strums a full chord. The strum's SIZE
+#     tracks velocity (see the SOFT..LOUD bounds below): a quiet strum barely
+#     clears the strings and keeps a tight windup, a loud one arcs high and sweeps
+#     a wide backswing/follow-through -- so the motion reads as its volume.
+# The struck-string count is len(event notes) -- one note per string per onset.
+STRUM_STRINGS = 4      # >3 strings in one motion -> strum, else pick
+PICK_HOVER = 0.012     # pick tip above the string plane between picked strokes
 PICK_DEPTH = 0.004     # pick tip below the string plane while crossing
-PICK_LEAD_X = 0.012    # base windup distance before the first struck string
-PICK_FOLLOW_X = 0.010  # base follow-through past the last struck string
+PICK_LEAD_X = 0.012    # picked windup distance before the first struck string
+PICK_FOLLOW_X = 0.010  # picked follow-through past the last struck string
+# Strum size scales linearly with velocity between these soft/loud bounds.
+STRUM_HOVER_SOFT = 0.014   # quiet strum: hand just skims the strings
+STRUM_HOVER_LOUD = 0.075   # loud strum: hand arcs well clear
+STRUM_LEAD_SOFT = 0.012    # quiet strum: tight windup into the first string
+STRUM_LEAD_LOUD = 0.075    # loud strum: wide arm sweep in
+STRUM_FOLLOW_SOFT = 0.010  # quiet strum: little follow-through
+STRUM_FOLLOW_LOUD = 0.060  # loud strum: long follow-through past the last string
 STRUM_TIME = 0.05      # seconds a chord strum spans around the onset
+REVERSAL_GAP = 0.4     # up to this gap (s) between opposite strokes, the hand
+                       # reverses at the shared apex instead of re-winding up:
+                       # the prior stroke's follow-through already carried it to
+                       # this stroke's backswing side, so a fresh (opposite,
+                       # farther) windup crammed into the tiny interval would
+                       # fling the hand out and snap it back within a frame.
 
 # Stroke direction follows metric ("pendulum") picking: down on the beat,
 # up on the off-beat. slot = round(beat / PENDULUM_SUBDIV); even = down,
@@ -369,6 +410,10 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     for f, items in per_finger.items():
         spec = FRET_FINGERS[f]
         prev_off = None
+        # Track this finger's most recent keyframe and whether it was a
+        # relaxed pose, so a long idle span before a press can be held flat
+        # at relax (see SETTLE_LEAD) instead of drifting the whole way in.
+        last_key, last_relax = float(frame_start), True
         for i, (n, target, rot, is_barre) in enumerate(items):
             rmat = _fret_rotation(*rot)
             rinv = rmat.transposed()
@@ -396,6 +441,13 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 hover_frame = max(hover_frame, prev_off + 0.5)
             hover_frame = min(hover_frame, on_frame)
 
+            # Hold relax until just before lifting to hover when the finger
+            # has been idle a while, so it doesn't slide across neighbours
+            # over a long interpolation from a distant relax keyframe.
+            settle = hover_frame - SETTLE_LEAD * fps
+            if last_relax and settle > last_key + 1.0:
+                _relax_finger(pbones, f, settle)
+
             _pose_finger(pbones, f, hover[0], hover[1], hover[2],
                          flex_hover, hover_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
@@ -416,15 +468,23 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             if (retarget and release_frame <= off_frame + 0.25
                     and nxt_hover - off_frame > 1.0):
                 release_frame = (off_frame + nxt_hover) / 2.0
+            is_last = i + 1 >= len(items)
+            last_key, last_relax = off_frame, False
             if release_frame > off_frame + 0.25:
-                if retarget:
-                    # Curl up while repositioning so the travelling
-                    # finger clears pressed neighbours instead of
-                    # sweeping through them at hover height.
+                if retarget or is_last:
+                    # Curl back to the neutral relaxed pose. A retargeting
+                    # finger does this to clear pressed neighbours while
+                    # travelling; the FINAL press does it so the finger
+                    # doesn't freeze in its reaching hover pose and stay
+                    # splayed across a neighbour for the rest of the take
+                    # (an isolated pinky press otherwise left the pinky
+                    # overlapping the ring finger from then on).
                     _relax_finger(pbones, f, release_frame)
+                    last_key, last_relax = release_frame, True
                 else:
                     _pose_finger(pbones, f, hover[0], hover[1], hover[2],
                                  flex_hover, release_frame)
+                    last_key, last_relax = release_frame, False
             prev_off = off_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
@@ -462,10 +522,19 @@ def _pendulum_subdiv(events):
 def _pick_directions(events):
     """+1 (down = bass->treble) / -1 (up) per event, by metric picking:
     down on the beat, up on the off-beat, with a loud post-rest note
-    forced to a power downstroke."""
+    forced to a power downstroke.
+
+    Successive strokes closer than ~1.5 subdivisions strictly ALTERNATE
+    (pendulum picking): there is no time for the hand to reset between two
+    same-direction strokes that close together, so a metric slot that would
+    repeat the previous direction is flipped. This keeps fast runs swinging
+    down-up-down-up and, crucially, avoids two same-direction strokes a beat
+    apart -- which would fling the picking hand back across the strings and
+    snap it in a single frame (a same-direction pair recovers on opposite
+    apex sides, unlike a reversal, which shares one apex)."""
     subdiv = _pendulum_subdiv(events)
     dirs = []
-    prev_t = None
+    prev_t, prev_beat = None, None
     for ev in events:
         beat = _event_beat(ev)
         if beat is None:  # defensive: no metric info -> simple alternate
@@ -473,12 +542,16 @@ def _pick_directions(events):
         else:
             slot = round(beat / subdiv)
             direction = 1 if slot % 2 == 0 else -1
+            if (dirs and prev_beat is not None
+                    and beat - prev_beat <= 1.5 * subdiv
+                    and direction == dirs[-1]):
+                direction = -dirs[-1]      # enforce the pendulum on fast pairs
         gap = None if prev_t is None else ev["t"] - prev_t
         vel = max(n["velocity"] for n in ev["notes"])
         if gap is not None and gap >= GAP_RESET and vel >= ACCENT_VEL:
             direction = 1  # accented attack after a rest -> downstroke
         dirs.append(direction)
-        prev_t = ev["t"]
+        prev_t, prev_beat = ev["t"], beat
     return dirs
 
 
@@ -487,8 +560,10 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
     arm_obj.animation_data_clear()
     tip_off = pick_world_offset(PICK_TIP_LOCAL)
     obj_y = fret_layout.PLUCK_Y - tip_off[1]
-    z_hover = fret_layout.STRING_Z + PICK_HOVER - tip_off[2]
     z_pluck = fret_layout.STRING_Z - PICK_DEPTH - tip_off[2]
+
+    def hover_z(lift):  # pick-tip clearance -> object z for a hover apex
+        return fret_layout.STRING_Z + lift - tip_off[2]
 
     def key(t, tip_x, z):
         arm_obj.location = (tip_x - tip_off[0], obj_y, z)
@@ -511,33 +586,59 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
         last_t = t
         return t
 
-    prev_t = None
+    prev_t, prev_dir = None, None
     last_frame = frame_start
     for ev, direction in zip(events, directions):
         t = ev["t"]
         gap = t - prev_t if prev_t is not None else None
         xs = sorted(n["pluck_x"] for n in ev["notes"])
         first, last = (xs[0], xs[-1]) if direction > 0 else (xs[-1], xs[0])
-        chord = len(ev["notes"]) > 1
+        n_strings = len(ev["notes"])
+        chord = n_strings > 1
+        strum = n_strings >= STRUM_STRINGS
 
-        # Louder -> bigger backswing and a faster (shorter) strike.
+        # Velocity 0..1 -- louder = bigger, faster stroke.
         vel_norm = max(0.0, min(1.0, max(n["velocity"]
                                          for n in ev["notes"]) / 127.0))
-        lead = PICK_LEAD_X * (0.6 + 1.3 * vel_norm)
-        follow = PICK_FOLLOW_X * (0.6 + 0.8 * vel_norm)
+
+        # A strum's size scales with velocity: a soft strum barely clears the
+        # strings with a tight windup, a loud one arcs high and sweeps a wide
+        # backswing/follow-through (the arm IK follows into the elbow), so the
+        # gesture reads as its volume. A pick stays a tight, low flick. z_hover
+        # is the apex the hand rises to on either side of the stroke.
+        if strum:
+            z_hover = hover_z(STRUM_HOVER_SOFT + vel_norm
+                              * (STRUM_HOVER_LOUD - STRUM_HOVER_SOFT))
+            lead = STRUM_LEAD_SOFT + vel_norm * (STRUM_LEAD_LOUD - STRUM_LEAD_SOFT)
+            follow = (STRUM_FOLLOW_SOFT + vel_norm
+                      * (STRUM_FOLLOW_LOUD - STRUM_FOLLOW_SOFT))
+        else:
+            z_hover = hover_z(PICK_HOVER)
+            lead = PICK_LEAD_X * (0.6 + 1.3 * vel_norm)
+            follow = PICK_FOLLOW_X * (0.6 + 0.8 * vel_norm)
         strike = STRIKE_SLOW - vel_norm * (STRIKE_SLOW - STRIKE_FAST)
-        cross_lag = STRUM_TIME if chord else 0.015
+        # A wider strum drags across more strings, so let it span more time
+        # (scaled by string count) instead of snapping through the set.
+        cross_lag = (STRUM_TIME * n_strings / 3.0 if strum
+                     else STRUM_TIME if chord else 0.015)
 
         # Backswing apex, held above the strings, then the strike drops
-        # to the string and crosses; apex->contact time = `strike`.
-        windup = t - strike - (min(0.06, 0.4 * gap) if gap is not None else 0.06)
-        key_after(windup, first - direction * lead, z_hover)
+        # to the string and crosses; apex->contact time = `strike`. On a quick
+        # direction reversal the previous stroke's follow-through already left
+        # the hand at this stroke's backswing apex (the pendulum reverses at a
+        # shared apex), so skip the fresh windup -- emitting it would fling the
+        # hand out and snap it back within a frame (see REVERSAL_GAP).
+        reversal = prev_dir is not None and direction != prev_dir
+        if not (reversal and gap is not None and gap <= REVERSAL_GAP):
+            windup = t - strike - (min(0.06, 0.4 * gap)
+                                   if gap is not None else 0.06)
+            key_after(windup, first - direction * lead, z_hover)
         key_after(t - 0.5 * strike, first - direction * lead * 0.4, z_pluck)
         key_after(t + cross_lag, last + direction * follow * 0.5, z_pluck)
         rise_t = key_after(t + cross_lag + 0.06,
                            last + direction * follow, z_hover)
         last_frame = max(last_frame, frame_start + rise_t * fps)
-        prev_t = t
+        prev_t, prev_dir = t, direction
 
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):

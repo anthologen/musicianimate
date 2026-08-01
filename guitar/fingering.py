@@ -291,17 +291,34 @@ def _transition_cost(prev_sounding, prev_state, sounding, state, new_ids,
     # Same finger re-pressed on a new note: fret hops hurt, string hops
     # cost a little. Barres collapse to their bass-most press so a barred
     # transition is charged once, not per string.
-    prev_fingers = {}
-    for s, f, fg in prev_state:
-        if f > 0 and (fg not in prev_fingers or s < prev_fingers[fg][0]):
-            prev_fingers[fg] = (s, f)
-    for fg, (ns, nf) in cur_fingers.items():
-        if fg in prev_fingers:
-            s, f = prev_fingers[fg]
-            if (ns, nf) != (s, f):
-                if nf != f:
-                    cost += WEIGHTS["same_finger"] * tf
-                cost += WEIGHTS["finger_string_hop"] * abs(ns - s)
+    #
+    # These per-finger reuse penalties model a finger travelling while it
+    # stays engaged - meaningful in a melodic line (sliding one finger to
+    # the next note is awkward). Between two fully re-struck chords the
+    # whole hand lifts and every finger replants, so charging per moved
+    # finger is double-counting the hand-position shift already priced
+    # above - and worse, it lets the search "park" fingers (an index barre
+    # + pinky) purely to look like fewer fingers move into the next chord,
+    # producing unnatural grips (a barre voicing of an open D just because
+    # a G follows). So skip them when both grips are chords with nothing
+    # held across (a replant); melodic transitions keep the full penalty.
+    prev_fretted = sum(1 for _, f, _ in prev_state if f > 0)
+    held_fretted = any(
+        id(n) not in new_ids and a[1] > 0
+        for n, a in zip(sounding, state) if id(n) in prev_by_id)
+    replant = prev_fretted >= 2 and len(cur_fingers) >= 2 and not held_fretted
+    if not replant:
+        prev_fingers = {}
+        for s, f, fg in prev_state:
+            if f > 0 and (fg not in prev_fingers or s < prev_fingers[fg][0]):
+                prev_fingers[fg] = (s, f)
+        for fg, (ns, nf) in cur_fingers.items():
+            if fg in prev_fingers:
+                s, f = prev_fingers[fg]
+                if (ns, nf) != (s, f):
+                    if nf != f:
+                        cost += WEIGHTS["same_finger"] * tf
+                    cost += WEIGHTS["finger_string_hop"] * abs(ns - s)
 
     # Light legato preference for staying on a string in melody lines.
     if len(prev_sounding) == 1 and len(sounding) == 1:
