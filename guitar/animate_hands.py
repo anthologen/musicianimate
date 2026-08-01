@@ -79,7 +79,11 @@ DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
 DIST_FLEX_BARRE = 0.06         # flattened index while barring
 DIST_FLEX_BARRE_HOVER = 0.12
-PRESS_STAGGER = 0.013  # fret-slot y spread between fingers sharing a fret
+PRESS_STAGGER = 0.022  # fret-slot y spread between fingers sharing a fret -
+                       # a diagonal placement (lower finger farther behind the
+                       # wire) that keeps same-fret finger bodies from crossing
+                       # even when the wrist roll that would tilt them apart is
+                       # averaged out by the pose smoothing across a chord run
 
 # Per-event wrist rotation freedom, chosen by a grid search that
 # penalizes predicted finger-finger collisions (forward kinematics of
@@ -102,6 +106,13 @@ TOUCH_CLEAR = 0.012    # axis distance where finger boxes sit flush
 COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
 RETARGET_DIST = 0.006  # lateral move beyond which a finger curls up
                        # (relax pose) while travelling to its next spot
+SETTLE_LEAD = 0.30     # seconds a long-idle finger holds its relaxed pose
+                       # before lifting to hover - without it a finger whose
+                       # only nearby keyframes are a distant relax and this
+                       # press interpolates the whole gap, sweeping slowly
+                       # across its neighbours on the way in (a lone pinky
+                       # press dragged the pinky through the ring finger for
+                       # seconds)
 
 # --- pick hand -------------------------------------------------------------
 # Two right-hand gestures, chosen per onset by how many strings it strikes:
@@ -399,6 +410,10 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     for f, items in per_finger.items():
         spec = FRET_FINGERS[f]
         prev_off = None
+        # Track this finger's most recent keyframe and whether it was a
+        # relaxed pose, so a long idle span before a press can be held flat
+        # at relax (see SETTLE_LEAD) instead of drifting the whole way in.
+        last_key, last_relax = float(frame_start), True
         for i, (n, target, rot, is_barre) in enumerate(items):
             rmat = _fret_rotation(*rot)
             rinv = rmat.transposed()
@@ -426,6 +441,13 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 hover_frame = max(hover_frame, prev_off + 0.5)
             hover_frame = min(hover_frame, on_frame)
 
+            # Hold relax until just before lifting to hover when the finger
+            # has been idle a while, so it doesn't slide across neighbours
+            # over a long interpolation from a distant relax keyframe.
+            settle = hover_frame - SETTLE_LEAD * fps
+            if last_relax and settle > last_key + 1.0:
+                _relax_finger(pbones, f, settle)
+
             _pose_finger(pbones, f, hover[0], hover[1], hover[2],
                          flex_hover, hover_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
@@ -446,15 +468,23 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             if (retarget and release_frame <= off_frame + 0.25
                     and nxt_hover - off_frame > 1.0):
                 release_frame = (off_frame + nxt_hover) / 2.0
+            is_last = i + 1 >= len(items)
+            last_key, last_relax = off_frame, False
             if release_frame > off_frame + 0.25:
-                if retarget:
-                    # Curl up while repositioning so the travelling
-                    # finger clears pressed neighbours instead of
-                    # sweeping through them at hover height.
+                if retarget or is_last:
+                    # Curl back to the neutral relaxed pose. A retargeting
+                    # finger does this to clear pressed neighbours while
+                    # travelling; the FINAL press does it so the finger
+                    # doesn't freeze in its reaching hover pose and stay
+                    # splayed across a neighbour for the rest of the take
+                    # (an isolated pinky press otherwise left the pinky
+                    # overlapping the ring finger from then on).
                     _relax_finger(pbones, f, release_frame)
+                    last_key, last_relax = release_frame, True
                 else:
                     _pose_finger(pbones, f, hover[0], hover[1], hover[2],
                                  flex_hover, release_frame)
+                    last_key, last_relax = release_frame, False
             prev_off = off_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
