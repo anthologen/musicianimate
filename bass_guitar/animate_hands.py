@@ -42,7 +42,7 @@ try:
     from . import fret_layout
     from .build_hands import (FRET_FINGERS, PLUCK_FINGERS, HAND_ROT_Z,
                               WRAP_TILT, PLUCK_ROT, PICK_TIP_LOCAL,
-                              pick_world_offset)
+                              PICK_HAND_ROT, pick_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger,
@@ -55,7 +55,7 @@ except ImportError:  # loaded as a loose script via importlib
     import fret_layout
     from build_hands import (FRET_FINGERS, PLUCK_FINGERS, HAND_ROT_Z,
                              WRAP_TILT, PLUCK_ROT, PICK_TIP_LOCAL,
-                             pick_world_offset)
+                             PICK_HAND_ROT, pick_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger,
@@ -103,16 +103,29 @@ PLUCK_SETTLE = 0.07    # seconds after onset the follow-through completes
 HAND_ARRIVE = 0.12     # seconds the hand slides to a new string before onset
 
 # --- pick hand (--style pick) ---------------------------------------------
-PICK_HOVER = 0.012
-PICK_DEPTH = 0.004
-PICK_LEAD_X = 0.012
-PICK_FOLLOW_X = 0.010
-STRUM_TIME = 0.05
-PENDULUM_SUBDIV = None
-ACCENT_VEL = 100
-GAP_RESET = 0.35
+# The pick stroke is a small wrist pendulum (see animate_pick_hand). Bass is
+# picked, not strummed, so the swing is DAMPENED and stays close to the
+# strings, and loudness drives the STRIKE SPEED (how fast the wrist dips onto
+# the string) rather than how far it reaches.
+PICK_SWING = 0.38      # half-swing of the wrist pendulum (rad): the pick clears
+                       # the strings by ~2 mm at the top of the swing and its
+                       # travel stays INSIDE the 18 mm string spacing, so it ticks
+                       # one string without raking its neighbours.
+PICK_DEPTH = 0.0018    # tip dip below the string centre at the bottom of the stroke
+PICK_FOLLOW_FRAC = 0.6  # how far the wrist swings out after the final note
+ACCENT_VEL = 100        # a note this loud after a rest restarts on a downstroke
+GAP_RESET = 0.35        # ...if the rest before it is at least this long (s)
 STRIKE_SLOW = 0.12
 STRIKE_FAST = 0.045
+# The strike is not pure wrist: the ARM joins in. The hand winds up a little
+# OPPOSITE the stroke just before contact and follows THROUGH in the stroke
+# direction just after (object translation across the strings -> the wrist head
+# moves -> the forearm/elbow follow). Amplitude scales with velocity, so soft
+# notes are almost pure wrist and loud/fast attacks throw more arm in. The strike
+# key itself sits exactly on the struck string, so contact stays precise.
+ARM_WIND = 0.007        # max wind-up across the strings at full velocity (m)
+ARM_FOLLOW = 0.012      # max follow-through in the stroke direction (m)
+ARM_FOLLOW_T = 0.05     # s after the strike the follow-through peaks
 
 
 # ===========================================================================
@@ -537,100 +550,175 @@ def animate_pluck_hand(arm_obj, notes, fps, frame_start,
 # Pick hand (--style pick) - ported from the guitar animator
 # ===========================================================================
 
-def _event_beat(ev):
-    beats = [n["beat"] for n in ev["notes"] if "beat" in n]
-    return min(beats) if beats else None
-
-
-def _pendulum_subdiv(events):
-    if PENDULUM_SUBDIV is not None:
-        return PENDULUM_SUBDIV
-    beats = [b for b in (_event_beat(ev) for ev in events) if b is not None]
-    gaps = sorted(b1 - b0 for b0, b1 in zip(beats, beats[1:]) if b1 - b0 > 1e-4)
-    if not gaps:
-        return 0.5
-    med = gaps[len(gaps) // 2]
-    grid = (1.0, 0.5, 1.0 / 3.0, 0.25)
-    snapped = min(grid, key=lambda g: abs(g - med))
-    return max(0.25, min(1.0, snapped))
-
-
 def _pick_directions(events):
-    subdiv = _pendulum_subdiv(events)
+    """Down/up stroke per event. Bass is ALTERNATE-picked: the wrist swings
+    like a pendulum, so each note simply flips the previous stroke's direction.
+    That makes every pluck a pass-THROUGH of the swing (the pick is moving
+    fastest as it crosses the string), which reads far more naturally than
+    re-striking from the same side. The one exception is a downstroke reset: an
+    accented note landing after a real rest starts a fresh downstroke."""
     dirs = []
     prev_t = None
     for ev in events:
-        beat = _event_beat(ev)
-        if beat is None:
-            direction = 1 if not dirs else -dirs[-1]
-        else:
-            slot = round(beat / subdiv)
-            direction = 1 if slot % 2 == 0 else -1
         gap = None if prev_t is None else ev["t"] - prev_t
         vel = max(n["velocity"] for n in ev["notes"])
-        if gap is not None and gap >= GAP_RESET and vel >= ACCENT_VEL:
+        if not dirs:
             direction = 1
+        elif gap is not None and gap >= GAP_RESET and vel >= ACCENT_VEL:
+            direction = 1
+        else:
+            direction = -dirs[-1]
         dirs.append(direction)
         prev_t = ev["t"]
     return dirs
 
 
-def animate_pick_hand(arm_obj, notes, fps, frame_start):
-    """Keyframe the picking hand's strokes. Returns the last frame."""
-    arm_obj.animation_data_clear()
-    tip_off = pick_world_offset(PICK_TIP_LOCAL)
-    obj_y = fret_layout.PLUCK_Y - tip_off[1]
-    z_hover = fret_layout.STRING_Z + PICK_HOVER - tip_off[2]
-    z_pluck = fret_layout.STRING_Z - PICK_DEPTH - tip_off[2]
+def _pick_swing_rig():
+    """Geometry of the pick's wrist swing. The pick tip hangs a fixed offset
+    ``uw`` (world) below the wrist bone's HEAD; rotating the wrist about the
+    world neck axis (Y, along the strings) swings the tip in the across-string
+    (X) / depth (Z) plane on a circle of radius ``r``. Because the swing pivots
+    about the bone head, and the bassist's right arm IK target COPY_LOCATIONs
+    that head, the whole pluck stroke costs the arm NO motion -- the arm only
+    ever sees the (smooth, per-string) object translation. Returns the pieces
+    the animator needs to turn a stroke into wrist rotation:
 
-    def key(t, tip_x, z):
-        arm_obj.location = (tip_x - tip_off[0], obj_y, z)
-        arm_obj.keyframe_insert(data_path="location",
-                                frame=frame_start + t * fps)
+      head_off  : world offset from the object origin to the wrist-bone head
+                  (so object loc = desired head world - head_off)
+      uw.y      : the tip's fixed offset along the strings (keeps y put)
+      r         : swing radius in the across/depth plane
+      phi_bot   : wrist angle placing the tip at the bottom of the arc
+      axis      : the swing axis in armature-local space
+    """
+    head_local = mathutils.Vector((0.0, -0.025, 0.0))
+    head_off = PICK_HAND_ROT @ head_local
+    uw = PICK_HAND_ROT @ (mathutils.Vector(PICK_TIP_LOCAL) - head_local)
+    r = math.hypot(uw.x, uw.z)
+    phi_bot = math.atan2(uw.x, -uw.z)        # min-z (deepest) wrist angle
+    axis = PICK_HAND_ROT.transposed() @ mathutils.Vector((0.0, 1.0, 0.0))
+    return head_off, uw.y, r, phi_bot, axis
+
+
+def animate_pick_hand(arm_obj, notes, fps, frame_start):
+    """Keyframe the picking hand's strokes as WRIST ROTATION over smooth
+    object tracking. The object only slides along the strings (X) to sit over
+    the struck string, at a constant height and depth; each pluck is a pendulum
+    of the wrist bone that swings the pick tip down through the string and out
+    the other side (a down/up stroke), so the fast per-note stroke stays in the
+    wrist and never jerks the arm that follows the wrist. Returns the last
+    frame."""
+    arm_obj.animation_data_clear()
+    pbone = arm_obj.pose.bones["wrist"]
+    pbone.rotation_mode = 'XYZ'
+
+    head_off, uw_y, r, phi_bot, axis = _pick_swing_rig()
+    # Object placement so the arc BOTTOM lands the tip at the pluck point:
+    # tip_bottom = head + (0, uw_y, -r). Solve for the head world the object
+    # must present, then back out the object origin. Height and along-string
+    # position are the SAME for every string, so the arm target only moves in
+    # the across-string direction, in smooth per-string steps.
+    head_z = fret_layout.STRING_Z - PICK_DEPTH + r
+    head_y = fret_layout.PLUCK_Y - uw_y
+
+    def objloc(x_head):
+        return (x_head - head_off.x, head_y - head_off.y, head_z - head_off.z)
+
+    def swing_euler(phi):
+        return tuple(mathutils.Matrix.Rotation(phi, 3, axis).to_euler())
 
     events = _group_events(notes)
     if not events:
         return frame_start
-
     directions = _pick_directions(events)
-    min_dt = 0.75 / fps
-    last_t = None
 
-    def key_after(t, tip_x, z):
-        nonlocal last_t
-        if last_t is not None:
-            t = max(t, last_t + min_dt)
-        key(t, tip_x, z)
-        last_t = t
-        return t
+    def to_frame(t):
+        return frame_start + t * fps
 
+    min_dt = 0.6 / fps
+
+    # 1. Object tracking. The hand eases from string to string (this is what the
+    #    arm target follows) AND adds a per-strike ARM sweep: it winds up a little
+    #    opposite the stroke just before contact and follows THROUGH in the stroke
+    #    direction just after, so the forearm/elbow join the wrist in the hit.
+    #    Amplitude scales with velocity; the mid key sits exactly on the struck
+    #    string on the beat, so the pick still contacts precisely.
+    loc_t = None
     prev_t = None
-    last_frame = frame_start
-    for ev, direction in zip(events, directions):
+    n_ev = len(events)
+    for i, (ev, d) in enumerate(zip(events, directions)):
+        x_head = sum(n["pluck_x"] for n in ev["notes"]) / len(ev["notes"])
+        vel_norm = max(0.0, min(1.0,
+                                max(n["velocity"] for n in ev["notes"]) / 127.0))
         t = ev["t"]
-        gap = t - prev_t if prev_t is not None else None
-        xs = sorted(n["pluck_x"] for n in ev["notes"])
-        first, last = (xs[0], xs[-1]) if direction > 0 else (xs[-1], xs[0])
-        chord = len(ev["notes"]) > 1
-        vel_norm = max(0.0, min(1.0, max(n["velocity"]
-                                         for n in ev["notes"]) / 127.0))
-        lead = PICK_LEAD_X * (0.6 + 1.3 * vel_norm)
-        follow = PICK_FOLLOW_X * (0.6 + 0.8 * vel_norm)
         strike = STRIKE_SLOW - vel_norm * (STRIKE_SLOW - STRIKE_FAST)
-        cross_lag = STRUM_TIME if chord else 0.015
-        windup = t - strike - (min(0.06, 0.4 * gap) if gap is not None else 0.06)
-        key_after(windup, first - direction * lead, z_hover)
-        key_after(t - 0.5 * strike, first - direction * lead * 0.4, z_pluck)
-        key_after(t + cross_lag, last + direction * follow * 0.5, z_pluck)
-        rise_t = key_after(t + cross_lag + 0.06,
-                           last + direction * follow, z_hover)
-        last_frame = max(last_frame, frame_start + rise_t * fps)
+        strike = min(strike, 0.7 * (t - prev_t)) if prev_t is not None \
+            else min(strike, 0.10)
+        gap_next = (events[i + 1]["t"] - t) if i + 1 < n_ev else 1.0
+        wind = ARM_WIND * vel_norm
+        follow = ARM_FOLLOW * vel_norm
+
+        def key_loc(dx, tt):
+            arm_obj.location = objloc(x_head + dx)
+            arm_obj.keyframe_insert(data_path="location",
+                                    frame=to_frame(max(0.0, tt)))
+
+        t_wind = t - strike
+        if loc_t is not None:
+            t_wind = max(t_wind, loc_t + min_dt)
+        t_strike = max(t_wind + min_dt, t)
+        t_follow = max(t + min(ARM_FOLLOW_T, 0.4 * gap_next), t_strike + min_dt)
+        key_loc(-d * wind, t_wind)      # wound up, off the stroke's back side
+        key_loc(0.0, t_strike)          # exact contact on the struck string
+        key_loc(d * follow, t_follow)   # follow-through in the stroke direction
+        loc_t = t_follow
         prev_t = t
 
+    # 2. Wrist pendulum -- the pick's whole stroke, kept small and close to the
+    #    strings (bass is picked, not strummed). Two keys per note: the wrist is
+    #    POISED to one side (pick a few mm off the strings), then dips THROUGH the
+    #    string exactly on the onset. Rising out the far side to the next note's
+    #    poise IS the follow-through, so alternating strokes flow as one gentle
+    #    pendulum of fixed, dampened amplitude (PICK_SWING).
+    #
+    #    Loudness sets the DESCENT TIME, not the reach: a loud note stays poised
+    #    and then snaps down over a short `strike`; a soft note eases down slowly
+    #    over a long one. Either way the bottom is keyed on the onset, so every
+    #    note lands in time -- only the approach speed changes with dynamics.
+    def key_rot(phi, t):
+        pbone.rotation_euler = swing_euler(phi)
+        pbone.keyframe_insert(data_path="rotation_euler", frame=to_frame(t))
+
+    last_frame = frame_start
+    prev_t = None
+    for ev, d in zip(events, directions):
+        t = ev["t"]
+        vel_norm = max(0.0, min(1.0,
+                                max(n["velocity"] for n in ev["notes"]) / 127.0))
+        strike = STRIKE_SLOW - vel_norm * (STRIKE_SLOW - STRIKE_FAST)
+        # Keep the poise after the previous pluck (and off the very first frame).
+        strike = min(strike, 0.7 * (t - prev_t)) if prev_t is not None \
+            else min(strike, 0.10)
+        key_rot(phi_bot - d * PICK_SWING, max(0.0, t - strike))  # poised, off string
+        key_rot(phi_bot, t)                                      # dip through, on beat
+        last_frame = max(last_frame, to_frame(t))
+        prev_t = t
+    # Lift off the strings after the final note.
+    key_rot(phi_bot + directions[-1] * PICK_SWING * PICK_FOLLOW_FRAC,
+            events[-1]["t"] + 0.12)
+    last_frame = max(last_frame, to_frame(events[-1]["t"] + 0.12))
+
+    # Bezier with auto-clamped handles so the wrist EASES like a real hand:
+    # angular speed goes to zero at each swing turnaround (the poise) and peaks
+    # as the pick crosses the string, instead of the constant-rate ramp that
+    # single-sided SINE easing gives. Clamped handles keep it from overshooting
+    # past the poise or digging past the string bottom.
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):
         for kp in fcurve.keyframe_points:
-            kp.interpolation = 'SINE'
+            kp.interpolation = 'BEZIER'
+            kp.handle_left_type = 'AUTO_CLAMPED'
+            kp.handle_right_type = 'AUTO_CLAMPED'
+        fcurve.update()
     return last_frame
 
 
