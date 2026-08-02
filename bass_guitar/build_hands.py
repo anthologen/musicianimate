@@ -401,12 +401,14 @@ def _make_pick_mesh(name, length):
 # The mounted result is validated against human wrist ROM in animate_bassist
 # (_check_wrist_pose), which checks the -Z palm faces the strings, so a palm-away /
 # over-bent re-solve is caught loudly at build time.
-# Re-solved for the edge-leaning plucking forearm (animate_bassist's ELBOW_POLE_OVERRIDE
-# ["R"]): that pole rotated the forearm ~23 deg from the pose this fist was first solved
-# against, which had opened the wrist to ~25 deg of flexion; the finger axis is re-aligned
-# to the new forearm (neutral base frame 18) and the pick blade below re-derived to keep
-# its 90 deg string crossing. Redo this pair if that pole changes again.
-PICK_HAND_ROT = mathutils.Euler((0.919490, -0.685742, -1.776975), 'XYZ').to_matrix()
+# Re-solved for the LOW-WORN plucking arm (animate_bassist ANCHOR_WORLD z=1.05 +
+# ELBOW_POLE_OVERRIDE["R"], forearm descending to the bridge at a ~115 deg elbow): the
+# finger axis (+y) is aligned to that forearm so the wrist is dead straight (0 deg at the
+# neutral base frame), and the roll is set so the PALM (-Z) faces onto the strings
+# (palm.into_face=0.94, thumb on top -- the reference pick grip). The pick blade below is
+# re-derived for this orientation. MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD) if
+# the wear height or R elbow pole changes.
+PICK_HAND_ROT = mathutils.Euler((0.342738, 0.0, -0.789799), 'XYZ').to_matrix()
 # The pick is pinched between the THUMB PAD and the side of the INDEX at the thumb edge
 # of the fist -- not dead-centre. The hand is a RIGHT hand (palm -z, fingers +y), so the
 # thumb/index/pick live at NEGATIVE local x.
@@ -420,8 +422,8 @@ PICK_PINCH = (-0.032, 0.046, -0.004)
 # -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
 # PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
 # rotation from the pick mesh's built -z axis to d_local.
-PICK_MESH_ROT = (-0.093433, 0.645583, -0.031273)
-PICK_TIP_LOCAL = (-0.057361, 0.042859, -0.037522)
+PICK_MESH_ROT = (0.146694, -0.436084, -0.032558)
+PICK_TIP_LOCAL = (-0.014195, 0.051585, -0.041797)
 
 
 def pick_world_offset(v):

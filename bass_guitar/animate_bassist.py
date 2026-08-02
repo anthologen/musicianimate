@@ -104,14 +104,18 @@ NECK_ELEV = math.radians(30.0)     # neck rises this far above horizontal
 # comfortably bent with slack for the forearm to drape over the top of the body while
 # the fingers rest by the bridge pickup (standard fingerstyle anchor).
 ANCHOR_LOCAL = (0.0, fret_layout.PLUCK_Y, fret_layout.STRING_Z)
-# Wear height of the plucking anchor on the torso. Worn at a MODERATE height
-# (z=1.00) so the bass sits around the waist and the right elbow carries a natural
-# bend (~122 deg interior; lower wear opens it toward straight, higher closes it).
-# Height is a tradeoff: the shoulder/arm-IK keeps the plucking elbow up around chest
-# height regardless of pole, so wearing very low just lifts the elbow and rolls the
-# palm up, while very high over-bends the elbow. z=1.00 matches a normal worn-at-the-
-# waist bassist stance.
-ANCHOR_WORLD = (-0.02, -0.195, 1.00)
+# Wear height of the plucking anchor on the torso. Worn LOW at the waist (z=1.05, bass
+# slung low like the reference photo) -- the plucking elbow rides up by the ribs and the
+# forearm descends to the bridge at a natural ~115 deg bend, elbow ~11 cm above the wrist.
+# Wear height is the key structural dial for the plucking arm: it sets the shoulder->
+# pluck-point reach and thus how bent the arm is. Go much lower (z~1.00) and the arm
+# stretches toward full extension (~143 deg), which reads as a stiff arch; this z=1.05 is
+# the low-slung sweet spot that keeps a relaxed bend. The WRIST is then kept straight
+# independently by the pick-hand orientation (below), re-solved to this exact geometry.
+# MOUNT-COUPLED: the pick hand (build_hands PICK_HAND_ROT / PICK_TIP_LOCAL /
+# PICK_MESH_ROT) and the R elbow pole below are solved for THIS height; re-solve if it
+# changes much.
+ANCHOR_WORLD = (-0.02, -0.195, 1.05)
 
 HOLDER_NAME = "BassRig"
 STRAP_NAME = "BassStrap"
@@ -120,22 +124,16 @@ STRAP_NAME = "BassStrap"
 # points BEHIND the player) the two-bone arm IK swings the elbow behind the thin bass
 # body and the forearm spears straight through it; this pole pulls the elbow to the
 # FRONT so the forearm instead lies over the front of the body toward the strings.
-# (2) It picks WHERE on the elbow's reachable circle the joint sits: parked so the
-# forearm swings DOWN onto the body's top-front edge and LEANS against it, the elbow
-# resting just off that edge as a near-fixed anchor for the plucking hand, instead of
-# either riding high (forearm floating off the body, wrist straight) or dropping the
-# elbow so low the wrist has to break hard to reach the strings. The elbow lands at
-# arm's-thickness off the treble-side top edge so the forearm's underside rests on the
-# rim (sampled across the take it sits a steady ~1-3 cm off the slab -- light contact,
-# never spearing through) and then angles up to the wrist, which stays out over the
-# strings by rig design (a body-resting forearm and a dead-straight wrist cannot both be
-# had -- see ANCHOR_WORLD). Retuned when BODY_W was slimmed: a narrower slab pulls that
-# edge inward, so the pole had to drop the forearm further to keep the lean. Keyed per
+# (2) It picks WHERE on the arm's elbow circle the joint sits: at the low waist wear
+# (ANCHOR_WORLD z=1.05) the arm carries a ~115 deg bend, and this pole tucks the elbow
+# back toward the player's side (clear of the chest by ~10 cm) so it rides up by the ribs
+# with the forearm descending to the bridge -- the low-slung pick-bassist posture from the
+# reference photo, wrist kept straight by the hand orientation. Keyed per
 # side. The fretting (L) arm gets a gentler one that
 # TUCKS the elbow down and slightly forward so the forearm rises up the neck to the
 # hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only the playing shot;
 # build_bassist's free-standing rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.25, 0.3, 0.6), "L": (0.55, 0.1, 0.55)}
+ELBOW_POLE_OVERRIDE = {"R": (-0.4, 0.1, 0.4), "L": (0.55, 0.1, 0.55)}
 # The bass, strap and (via the chest, which passively inherits it) the shoulders all
 # ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"
