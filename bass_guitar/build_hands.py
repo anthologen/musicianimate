@@ -401,7 +401,12 @@ def _make_pick_mesh(name, length):
 # The mounted result is validated against human wrist ROM in animate_bassist
 # (_check_wrist_pose), which checks the -Z palm faces the strings, so a palm-away /
 # over-bent re-solve is caught loudly at build time.
-PICK_HAND_ROT = mathutils.Euler((0.327179, -0.931901, -1.292004), 'XYZ').to_matrix()
+# Re-solved for the edge-leaning plucking forearm (animate_bassist's ELBOW_POLE_OVERRIDE
+# ["R"]): that pole rotated the forearm ~23 deg from the pose this fist was first solved
+# against, which had opened the wrist to ~25 deg of flexion; the finger axis is re-aligned
+# to the new forearm (neutral base frame 18) and the pick blade below re-derived to keep
+# its 90 deg string crossing. Redo this pair if that pole changes again.
+PICK_HAND_ROT = mathutils.Euler((0.919490, -0.685742, -1.776975), 'XYZ').to_matrix()
 # The pick is pinched between the THUMB PAD and the side of the INDEX at the thumb edge
 # of the fist -- not dead-centre. The hand is a RIGHT hand (palm -z, fingers +y), so the
 # thumb/index/pick live at NEGATIVE local x.
@@ -415,8 +420,8 @@ PICK_PINCH = (-0.032, 0.046, -0.004)
 # -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
 # PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
 # rotation from the pick mesh's built -z axis to d_local.
-PICK_MESH_ROT = (0.430612, 0.574891, 0.129127)
-PICK_TIP_LOCAL = (-0.05492, 0.060767, -0.036146)
+PICK_MESH_ROT = (-0.093433, 0.645583, -0.031273)
+PICK_TIP_LOCAL = (-0.057361, 0.042859, -0.037522)
 
 
 def pick_world_offset(v):
