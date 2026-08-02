@@ -47,7 +47,7 @@ BRIDGE_Y = fret_layout.BRIDGE_Y     # bridge saddles sit here, on the body
 NUT_Y = fret_layout.NUT_Y
 
 BODY_Y0, BODY_Y1 = -0.24, 0.30     # body extent along the neck axis (~540 mm slab)
-BODY_W = 0.36                       # widest point of the slab
+BODY_W = 0.30                       # widest point of the slab (slim offset bout)
 BODY_THICK = 0.045
 
 NECK_THICK = fret_layout.NECK_THICK  # wood behind the fretboard

@@ -121,18 +121,21 @@ STRAP_NAME = "BassStrap"
 # body and the forearm spears straight through it; this pole pulls the elbow to the
 # FRONT so the forearm instead lies over the front of the body toward the strings.
 # (2) It picks WHERE on the elbow's reachable circle the joint sits: parked so the
-# forearm lies across the body and DRAPES ONTO its top edge (just grazing it), the
-# elbow acting as a near-fixed anchor for the plucking hand, instead of either riding
-# high (forearm floating off the body, wrist straight) or dropping the elbow so low the
-# wrist has to break hard to reach the strings. This R pole is the balanced middle: the
-# forearm rests on the body with the wrist at a relaxed angle (the hand hangs straight
-# down over the strings by rig design, so a body-resting forearm and a dead-straight
-# wrist cannot both be had -- see ANCHOR_WORLD). Keyed per side. The fretting (L) arm
-# gets a gentler one that
+# forearm swings DOWN onto the body's top-front edge and LEANS against it, the elbow
+# resting just off that edge as a near-fixed anchor for the plucking hand, instead of
+# either riding high (forearm floating off the body, wrist straight) or dropping the
+# elbow so low the wrist has to break hard to reach the strings. The elbow lands at
+# arm's-thickness off the treble-side top edge so the forearm's underside rests on the
+# rim (sampled across the take it sits a steady ~1-3 cm off the slab -- light contact,
+# never spearing through) and then angles up to the wrist, which stays out over the
+# strings by rig design (a body-resting forearm and a dead-straight wrist cannot both be
+# had -- see ANCHOR_WORLD). Retuned when BODY_W was slimmed: a narrower slab pulls that
+# edge inward, so the pole had to drop the forearm further to keep the lean. Keyed per
+# side. The fretting (L) arm gets a gentler one that
 # TUCKS the elbow down and slightly forward so the forearm rises up the neck to the
 # hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only the playing shot;
 # build_bassist's free-standing rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.4, -0.3, 0.4), "L": (0.55, 0.1, 0.55)}
+ELBOW_POLE_OVERRIDE = {"R": (-0.25, 0.3, 0.6), "L": (0.55, 0.1, 0.55)}
 # The bass, strap and (via the chest, which passively inherits it) the shoulders all
 # ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"
