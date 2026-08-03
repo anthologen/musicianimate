@@ -403,12 +403,18 @@ def _make_pick_mesh(name, length):
 # over-bent re-solve is caught loudly at build time.
 # Re-solved for the LOW-WORN plucking arm (animate_bassist ANCHOR_WORLD z=1.05 +
 # ELBOW_POLE_OVERRIDE["R"], forearm descending to the bridge at a ~115 deg elbow): the
-# finger axis (+y) is aligned to that forearm so the wrist is dead straight (0 deg at the
-# neutral base frame), and the roll is set so the PALM (-Z) faces onto the strings
-# (palm.into_face=0.94, thumb on top -- the reference pick grip). The pick blade below is
-# re-derived for this orientation. MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD) if
-# the wear height or R elbow pole changes.
-PICK_HAND_ROT = mathutils.Euler((0.342738, 0.0, -0.789799), 'XYZ').to_matrix()
+# finger axis (+y) is aligned to that forearm so the wrist is ~straight. The roll is
+# PRONATED so the POSED palm (this base plus the animate_pick_hand wrist swing) faces DOWN
+# toward the strings through the whole stroke -- NOT the earlier roll, which looked
+# palm-down at rest but the pick swing rolled it UP during play (the "wrist rotated up"
+# look): the swing is a wrist rotation about the string axis, so the palm's facing must be
+# solved on the POSED bone (obj @ pose), not the object alone. At this roll the posed palm
+# rides ~0.5 down / 0.7 into-the-strings and, because the swing rolls it, it turns MORE
+# toward the ground around the DOWNSTROKE poise (~0.72 down) and least on the upstroke
+# (~0.28) -- the natural pick-hand roll. Blade below re-derived for this orientation.
+# MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD) if the wear height or R elbow pole
+# changes.
+PICK_HAND_ROT = mathutils.Euler((-1.709731, -1.923813, 0.886423), 'XYZ').to_matrix()
 # The pick is pinched between the THUMB PAD and the side of the INDEX at the thumb edge
 # of the fist -- not dead-centre. The hand is a RIGHT hand (palm -z, fingers +y), so the
 # thumb/index/pick live at NEGATIVE local x.
@@ -422,8 +428,8 @@ PICK_PINCH = (-0.032, 0.046, -0.004)
 # -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
 # PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
 # rotation from the pick mesh's built -z axis to d_local.
-PICK_MESH_ROT = (0.146694, -0.436084, -0.032558)
-PICK_TIP_LOCAL = (-0.014195, 0.051585, -0.041797)
+PICK_MESH_ROT = (0.307966, 1.079680, 0.185476)
+PICK_TIP_LOCAL = (-0.069168, 0.052026, -0.022943)
 
 
 def pick_world_offset(v):

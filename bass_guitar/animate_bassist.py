@@ -299,7 +299,8 @@ def _check_wrist_pose(arm, right_hand, frames):
                      @ V((0.0, 0.0, -1.0))).normalized()
     pairs = {"L": "FretHand", "R": right_hand}
     saved = scene.frame_current
-    worst = {}
+    worst_bend = {}   # side -> max wrist bend (rad), on the base finger axis
+    worst_face = {}   # side -> min palm.into_face, on the POSED palm
     for f in frames:
         scene.frame_set(int(round(f)))
         bpy.context.view_layer.update()
@@ -310,33 +311,37 @@ def _check_wrist_pose(arm, right_hand, frames):
                 continue
             e = (arm.matrix_world @ fore.tail
                  - arm.matrix_world @ fore.head).normalized()
-            R = hand.matrix_world.to_3x3()
-            finger = (R @ V((0.0, 1.0, 0.0))).normalized()
-            # The hand rigs' PALM is the local -Z side (fingers curl toward -z,
-            # the pick is pinched there); +Z is the back of the hand.
-            palm = (R @ V((0.0, 0.0, -1.0))).normalized()
+            # BEND = authored wrist straightness: forearm vs the hand's BASE finger
+            # axis (object +Y), not the transient pluck swing.
+            finger = (hand.matrix_world.to_3x3() @ V((0.0, 1.0, 0.0))).normalized()
             bend = e.angle(finger)
-            w = worst.get(side)
-            if w is None or bend > w[0]:
-                worst[side] = (bend, palm)
+            if side not in worst_bend or bend > worst_bend[side]:
+                worst_bend[side] = bend
+            # PALM facing must be read on the POSED wrist bone (obj @ pose): the pick
+            # swing ROLLS the palm during play, so the object palm alone is not what
+            # actually faces the strings. PALM is the hand's local -Z (fingers curl
+            # toward -z, the pick is pinched there); +Z is the back of the hand.
+            wb = hand.pose.bones.get("wrist")
+            Rp = ((hand.matrix_world @ wb.matrix).to_3x3() if wb is not None
+                  else hand.matrix_world.to_3x3())
+            face = (Rp @ V((0.0, 0.0, -1.0))).normalized().dot(into_face) \
+                if into_face is not None else 1.0
+            if side not in worst_face or face < worst_face[side]:
+                worst_face[side] = face
     scene.frame_set(saved)
     for side, hand_name in pairs.items():
-        if side not in worst:
-            continue
-        bend, palm = worst[side]
-        if bend > WRIST_BEND_MAX:
+        if worst_bend.get(side, 0.0) > WRIST_BEND_MAX:
             raise RuntimeError(
-                f"{hand_name} wrist is bent {math.degrees(bend):.0f} deg off the "
-                f"forearm (human max ~{math.degrees(WRIST_BEND_MAX):.0f}); the hand "
-                f"orientation in build_hands is anatomically impossible -- re-solve it.")
-        if side == "R" and into_face is not None:
-            facing = palm.dot(into_face)
-            if facing < PALM_TO_STRINGS_MIN:
-                raise RuntimeError(
-                    f"{hand_name} palm faces AWAY from the strings (palm.into-face="
-                    f"{facing:+.2f}, need >= {PALM_TO_STRINGS_MIN}); the picking wrist "
-                    f"is rotated the wrong way -- fix PICK/PLUCK orientation in "
-                    f"build_hands so the palm turns onto the strings.")
+                f"{hand_name} wrist is bent {math.degrees(worst_bend[side]):.0f} deg "
+                f"off the forearm (human max ~{math.degrees(WRIST_BEND_MAX):.0f}); the "
+                f"hand orientation in build_hands is anatomically impossible -- re-solve.")
+        if side == "R" and into_face is not None \
+                and worst_face.get(side, 1.0) < PALM_TO_STRINGS_MIN:
+            raise RuntimeError(
+                f"{hand_name} palm faces AWAY from the strings (posed palm.into-face="
+                f"{worst_face[side]:+.2f}, need >= {PALM_TO_STRINGS_MIN}); the picking "
+                f"wrist is rotated the wrong way -- fix PICK orientation in build_hands "
+                f"so the palm turns onto the strings.")
 
 
 # ---------------------------------------------------------------------------
