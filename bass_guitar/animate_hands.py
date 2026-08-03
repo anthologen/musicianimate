@@ -113,6 +113,13 @@ PICK_SWING = 0.38      # half-swing of the wrist pendulum (rad): the pick clears
                        # one string without raking its neighbours.
 PICK_DEPTH = 0.0018    # tip dip below the string centre at the bottom of the stroke
 PICK_FOLLOW_FRAC = 0.6  # how far the wrist swings out after the final note
+# The bare neck-axis swing rolls the palm (pronation/supination) as much as it rocks the
+# wrist. PICK_DEVIATE tilts the swing axis OFF the forearm/finger axis (which is the part
+# that rolls the palm) toward pure ulnar/radial DEVIATION, so the wrist rocks side-to-side
+# and the palm holds a steadier down-facing angle -- classic wrist picking. 0 = the old
+# pure neck-axis swing (palm rolls, no along-string drift); 1 = no palm roll but the pick
+# arcs far along its own string. 0.5 halves the roll for a ~20 mm along-string arc.
+PICK_DEVIATE = 0.5
 ACCENT_VEL = 100        # a note this loud after a rest restarts on a downstroke
 GAP_RESET = 0.35        # ...if the rest before it is at least this long (s)
 STRIKE_SLOW = 0.12
@@ -575,28 +582,35 @@ def _pick_directions(events):
 
 def _pick_swing_rig():
     """Geometry of the pick's wrist swing. The pick tip hangs a fixed offset
-    ``uw`` (world) below the wrist bone's HEAD; rotating the wrist about the
-    world neck axis (Y, along the strings) swings the tip in the across-string
-    (X) / depth (Z) plane on a circle of radius ``r``. Because the swing pivots
-    about the bone head, and the bassist's right arm IK target COPY_LOCATIONs
-    that head, the whole pluck stroke costs the arm NO motion -- the arm only
-    ever sees the (smooth, per-string) object translation. Returns the pieces
-    the animator needs to turn a stroke into wrist rotation:
+    ``uw`` (flat world) from the wrist bone's HEAD; rotating the wrist about the
+    swing ``axis`` sweeps the tip so it dips through the strings. The neck axis
+    (Y) keeps the tip's along-string y FIXED (no rake) but rolls the palm; tilting
+    the axis by PICK_DEVIATE off the forearm axis trades that palm roll for wrist
+    DEVIATION (and a little along-string arc). Because the swing pivots about the
+    bone head, which the bassist's right arm IK target COPY_LOCATIONs, the stroke
+    costs the arm NO motion -- it only sees the smooth per-string object slide.
+    Returns:
 
-      head_off  : world offset from the object origin to the wrist-bone head
-                  (so object loc = desired head world - head_off)
-      uw.y      : the tip's fixed offset along the strings (keeps y put)
-      r         : swing radius in the across/depth plane
-      phi_bot   : wrist angle placing the tip at the bottom of the arc
-      axis      : the swing axis in armature-local space
+      head_off : flat-world offset from the object origin to the wrist-bone head
+      tip_off  : flat-world tip offset from the head AT THE STRIKE (phi_bot), so
+                 object loc = pluck point - tip_off - head_off
+      phi_bot  : wrist angle placing the tip deepest (through the strings)
+      axis     : the swing axis in armature-local space
     """
     head_local = mathutils.Vector((0.0, -0.025, 0.0))
     head_off = PICK_HAND_ROT @ head_local
     uw = PICK_HAND_ROT @ (mathutils.Vector(PICK_TIP_LOCAL) - head_local)
-    r = math.hypot(uw.x, uw.z)
-    phi_bot = math.atan2(uw.x, -uw.z)        # min-z (deepest) wrist angle
-    axis = PICK_HAND_ROT.transposed() @ mathutils.Vector((0.0, 1.0, 0.0))
-    return head_off, uw.y, r, phi_bot, axis
+    # Swing axis = neck axis (Y) with PICK_DEVIATE of its FINGER-axis component
+    # removed (that component is what rolls the palm), tilting toward deviation.
+    finger = (PICK_HAND_ROT @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
+    a = (mathutils.Vector((0.0, 1.0, 0.0)) - PICK_DEVIATE * finger.y * finger)
+    a.normalize()
+    # phi_bot = wrist angle putting the tip DEEPEST (min flat z = through the strings).
+    phi_bot = min((i * math.tau / 720.0 for i in range(720)),
+                  key=lambda phi: (mathutils.Matrix.Rotation(phi, 3, a) @ uw).z)
+    tip_off = mathutils.Matrix.Rotation(phi_bot, 3, a) @ uw
+    axis = PICK_HAND_ROT.transposed() @ a
+    return head_off, tip_off, phi_bot, axis
 
 
 def animate_pick_hand(arm_obj, notes, fps, frame_start):
@@ -611,17 +625,15 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
     pbone = arm_obj.pose.bones["wrist"]
     pbone.rotation_mode = 'XYZ'
 
-    head_off, uw_y, r, phi_bot, axis = _pick_swing_rig()
-    # Object placement so the arc BOTTOM lands the tip at the pluck point:
-    # tip_bottom = head + (0, uw_y, -r). Solve for the head world the object
-    # must present, then back out the object origin. Height and along-string
-    # position are the SAME for every string, so the arm target only moves in
-    # the across-string direction, in smooth per-string steps.
-    head_z = fret_layout.STRING_Z - PICK_DEPTH + r
-    head_y = fret_layout.PLUCK_Y - uw_y
-
+    head_off, tip_off, phi_bot, axis = _pick_swing_rig()
+    # Object placement so the arc BOTTOM (phi_bot) lands the tip at the pluck point:
+    # tip_world = obj_loc + head_off + tip_off, wanted at (x_head, PLUCK_Y, STRING_Z-DEPTH).
+    # The across-string x is per-string; the depth/along-string parts are the same every
+    # strike, so the arm target still only slides across in smooth per-string steps.
     def objloc(x_head):
-        return (x_head - head_off.x, head_y - head_off.y, head_z - head_off.z)
+        return (x_head - head_off.x - tip_off.x,
+                fret_layout.PLUCK_Y - head_off.y - tip_off.y,
+                fret_layout.STRING_Z - PICK_DEPTH - head_off.z - tip_off.z)
 
     def swing_euler(phi):
         return tuple(mathutils.Matrix.Rotation(phi, 3, axis).to_euler())
