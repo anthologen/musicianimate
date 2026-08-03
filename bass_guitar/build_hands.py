@@ -428,8 +428,13 @@ PICK_PINCH = (-0.032, 0.046, -0.004)
 # -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
 # PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
 # rotation from the pick mesh's built -z axis to d_local.
+# Pick shortened to ~27 mm (was 42) with the blade direction kept -- a short pick with
+# just the tip past the fist. Because animate_hands lands the TIP on the strings, a
+# shorter pick also brings the whole hand DOWN closer to the strings (reference grip).
+# 27 mm is the shortest that keeps the curled fingers off the strings through the
+# deviation swing dip (25 mm grazed a string at the swing bottom).
 PICK_MESH_ROT = (0.307966, 1.079680, 0.185476)
-PICK_TIP_LOCAL = (-0.069168, 0.052026, -0.022943)
+PICK_TIP_LOCAL = (-0.055815, 0.049861, -0.016137)
 
 
 def pick_world_offset(v):
