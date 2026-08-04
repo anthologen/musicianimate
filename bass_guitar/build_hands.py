@@ -12,7 +12,8 @@ collection containing two armatures:
     side, palm beside the treble edge below string level, knuckles riding
     the edge (index toward the nut, pinky toward the bridge), fingers
     arching over the strings, and a static thumb box pressing the back of
-    the neck. The knuckle spread is widened for the bigger bass neck.
+    the neck. The hand is a realistic size matching the plucking hand; the
+    wide bass frets are covered by finger splay, not a stretched palm.
   - ``PluckHand`` (fingerstyle, the default): a hand hovering above the
     strings near the bridge pickup, with a static thumb box anchored on
     the pickup (floating-thumb style) and two articulated plucking
@@ -108,16 +109,21 @@ def pluck_local_offset(w):
 
 # ---------------------------------------------------------------------------
 # Fret-hand dimensions (metres), in armature-local space. Knuckle x spreads
-# the fingers along the neck; the spread is wider than the guitar's to sit
-# over the bass's bigger frets. y is the reach direction across the strings.
+# the fingers along the neck; y is the reach direction across the strings.
+# The knuckle span (index->pinky ~74 mm) and palm are sized to a realistic
+# human hand -- the SAME hand size as the plucking hand -- so the two hands
+# read as a matched pair. The wide bass frets are reached NOT by a stretched
+# palm but by finger SPLAY (the IK's z-rotation / knuckle abduction), the
+# reach mechanism the animator already drives (see FINGER_ROT_LIMIT and
+# animate_hands' _fret_rotation).
 # ---------------------------------------------------------------------------
 
 FRET_FINGERS = {
     #        knuckle (x, y, z)             (prox, mid, dist) segment lengths
-    1: {"knuckle": (0.052, 0.050, 0.0), "lengths": (0.044, 0.027, 0.021)},
-    2: {"knuckle": (0.018, 0.055, 0.0), "lengths": (0.048, 0.031, 0.023)},
-    3: {"knuckle": (-0.018, 0.053, 0.0), "lengths": (0.045, 0.029, 0.022)},
-    4: {"knuckle": (-0.052, 0.046, 0.0), "lengths": (0.037, 0.025, 0.020)},
+    1: {"knuckle": (0.037, 0.050, 0.0), "lengths": (0.044, 0.027, 0.021)},
+    2: {"knuckle": (0.013, 0.055, 0.0), "lengths": (0.048, 0.031, 0.023)},
+    3: {"knuckle": (-0.013, 0.053, 0.0), "lengths": (0.045, 0.029, 0.022)},
+    4: {"knuckle": (-0.037, 0.046, 0.0), "lengths": (0.037, 0.025, 0.020)},
 }
 
 # Plucking fingers: index (pi) and middle (pm), close together. Under
@@ -137,7 +143,9 @@ PLUCK_FINGERS = {
 
 FINGER_BOX_W = 0.012
 FINGER_BOX_H = 0.013
-FRET_PALM_SIZE = (0.105, 0.080, 0.022)
+# Both palms are the same realistic size so the two hands match; the fret
+# palm just covers the (now realistic) knuckle span rather than a stretched one.
+FRET_PALM_SIZE = (0.086, 0.072, 0.024)
 PLUCK_PALM_SIZE = (0.085, 0.070, 0.026)
 
 # --- Finger joint range-of-motion limits (human norms; degrees) --------------

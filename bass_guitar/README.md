@@ -91,8 +91,9 @@ fingering must match the `style=` used to build the hands.
 - The `FretHand` armature wraps the neck (`build_hands.WRAP_TILT`): palm beside
   the treble edge below string level, knuckle line just above it, fingers
   arching up and over the strings, and a static thumb box pressing the back of
-  the neck. The knuckle spread is widened for the bigger bass neck. Finger
-  chains use the piano rig's convention (pose-space x-rotation = curl,
+  the neck. It is a realistic hand size matching the plucking hand; the wide
+  bass frets are covered by finger splay (z-rotation), not a stretched palm.
+  Finger chains use the piano rig's convention (pose-space x-rotation = curl,
   z-rotation = sideways reach), so it shares the piano's closed-form IK.
 - The `PluckHand` hovers above the strings near the bridge pickup with a static
   floating thumb; each note curls the assigned finger (`pi`/`pm`) onto the
