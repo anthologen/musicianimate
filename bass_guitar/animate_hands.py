@@ -71,6 +71,11 @@ REACH_FRAC = 0.50      # fraction of finger length the knuckle sits back
 DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
 PRESS_STAGGER = 0.014  # fret-slot y spread between fingers sharing a fret
+RELAX_LIFT = 2.5       # frames to lift a finger back to its flat rest after a note
+APPROACH_LEAD = 3.0    # frames of quick approach from the flat rest into a hover
+HOLD_GAP = 8.0         # frames; an idle stretch longer than this gets a flat-rest
+                       # key so the finger waits flat instead of drifting for many
+                       # frames through an in-between pose that crosses a neighbour
 
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
@@ -163,43 +168,6 @@ def _press_notes(event):
                                * ((len(group) - 1) / 2.0 - i)))
             out.append(rep)
     return out
-
-
-def _idle_fret_positions(press):
-    """Fret slot each *non-pressing* finger should hover over, so the four
-    fingers stay in natural nut-to-bridge order and none pokes past a
-    neighbour (the source of the index/middle crossings).
-
-    A pressing finger anchors its own fret; an idle finger between two
-    pressed fingers is interpolated by finger index, and an idle finger
-    outside them fans out one fret per finger. The result is strictly
-    monotonic in finger number, so no idle finger ever crosses a pressed
-    one. Returns {finger: fret_slot} for all four fingers (fret_slot is a
-    float; only idle fingers are used by the caller)."""
-    anchors = {}
-    for n in press:
-        f = n["finger"]
-        anchors[f] = min(n["fret"], anchors.get(f, n["fret"]))
-    pressed = sorted(anchors)
-    pos = {}
-    for f in (1, 2, 3, 4):
-        if f in anchors:
-            pos[f] = float(anchors[f])
-            continue
-        below = [pf for pf in pressed if pf < f]
-        above = [pf for pf in pressed if pf > f]
-        if below and above:
-            pl, ph = below[-1], above[0]
-            pos[f] = anchors[pl] + (anchors[ph] - anchors[pl]) * (f - pl) / (ph - pl)
-        elif below:
-            pl = below[-1]
-            pos[f] = anchors[pl] + (f - pl)
-        elif above:
-            ph = above[0]
-            pos[f] = anchors[ph] - (ph - f)
-        else:                       # no pressed finger (unreachable here)
-            pos[f] = float(f)
-    return pos
 
 
 def _fret_rotation(yaw, roll):
@@ -366,7 +334,6 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         arm_obj.keyframe_insert(data_path="location", frame=frame)
         arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
-    spans = []  # (arrive, depart-or-None) per event, for idle-finger hovers
     prev_t = None
     for i, (ev, target, rot) in enumerate(zip(events, targets, rots)):
         arrive = ev["t"] - ARRIVE_LEAD
@@ -381,112 +348,92 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         depart = max(depart, ev["t"])
         if depart > arrive + 0.02:
             key_root(depart, target, rot)
-            spans.append((arrive, depart))
             prev_t = depart
         else:
-            spans.append((arrive, None))
             prev_t = arrive
+
+    per_finger = {}
+    for ev, target, rot in zip(events, targets, rots):
+        for n in _press_notes(ev):
+            per_finger.setdefault(n["finger"], []).append((n, target, rot))
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
         return max_attack_frames - vel_t * (max_attack_frames -
                                             min_attack_frames)
 
-    # Per-event data every finger draws on: where the pressing fingers go,
-    # and where the idle ones should hover so all four keep a natural
-    # nut-to-bridge order (see _idle_fret_positions).
-    ev_info = []
-    for (ev, target, rot), (arrive, depart) in zip(zip(events, targets, rots),
-                                                    spans):
-        press = _press_notes(ev)
-        ev_info.append({
-            "target": target, "rot": rot, "arrive": arrive, "depart": depart,
-            "press": {n["finger"]: n for n in press},
-            "slots": _idle_fret_positions(press),
-            "mean_x": sum(n["x"] for n in press) / len(press),
-        })
+    event_onsets = sorted(to_frame(ev["t"]) for ev in events)
 
-    # One ordered pass per finger over every fretted event: press its note
-    # (attack -> hold -> lift) or hover over its idle slot. Keying a finger
-    # in time order (instead of a press pass and a separate idle pass that
-    # fight over the gaps) keeps an idle finger tucked over its own fret,
-    # never poking nut-ward past a pressing neighbour.
+    def next_onset_after(frame):
+        for o in event_onsets:
+            if o > frame + 0.5:
+                return o
+        return None
+
     last_frame = frame_start
-    for f in FRET_FINGERS:
+    for f, items in per_finger.items():
         spec = FRET_FINGERS[f]
-        prev_end = None      # last frame keyed for this finger
-
-        def knuckle_ik(rot):
+        prev_end = frame_start   # last frame keyed for this finger (a flat rest)
+        for i, (n, target, rot) in enumerate(items):
             rmat = _fret_rotation(*rot)
             rinv = rmat.transposed()
             ko = rmat @ mathutils.Vector(spec["knuckle"])
-            return rmat, rinv, ko
+            knuckle = (target[0] + ko.x, target[1] + ko.y, target[2] + ko.z)
 
-        def ik(rinv, knuckle, tx, ty, tz, flex):
-            local = rinv @ mathutils.Vector(
-                (tx - knuckle[0], ty - knuckle[1], tz - knuckle[2]))
-            return _finger_ik(local.x, local.y, -local.z, spec["lengths"], flex)
+            def ik_inputs(tip_z):
+                local = rinv @ mathutils.Vector(
+                    (n["x"] - knuckle[0], n["y"] - knuckle[1],
+                     tip_z - knuckle[2]))
+                return local.x, local.y, -local.z
 
-        for i, info in enumerate(ev_info):
-            _rmat, rinv, ko = knuckle_ik(info["rot"])
-            tgt = info["target"]
-            knuckle = (tgt[0] + ko.x, tgt[1] + ko.y, tgt[2] + ko.z)
+            dx, dy, dv = ik_inputs(n["z"])
+            pressed = _finger_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_PRESS)
+            dx, dy, dv = ik_inputs(n["z"] + HOVER_LIFT)
+            hover = _finger_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_HOVER)
 
-            if f in info["press"]:
-                n = info["press"][f]
-                pressed = ik(rinv, knuckle, n["x"], n["y"], n["z"],
-                             DIST_FLEX_PRESS)
-                hover = ik(rinv, knuckle, n["x"], n["y"], n["z"] + HOVER_LIFT,
-                           DIST_FLEX_HOVER)
-                on_frame = to_frame(n["start"])
-                off_frame = max(on_frame, to_frame(n["end"]))
-                hover_frame = max(frame_start, on_frame - attack_frames(n))
-                if prev_end is not None:
-                    hover_frame = max(hover_frame, prev_end + 0.5)
-                hover_frame = min(hover_frame, on_frame)
+            on_frame = to_frame(n["start"])
+            off_frame = max(on_frame, to_frame(n["end"]))
+            hover_frame = max(frame_start, on_frame - attack_frames(n))
+            hover_frame = max(hover_frame, prev_end + 0.5)
+            hover_frame = min(hover_frame, on_frame)
 
-                _pose_finger(pbones, f, *hover, DIST_FLEX_HOVER, hover_frame)
-                _pose_finger(pbones, f, *pressed, DIST_FLEX_PRESS, on_frame)
-                _pose_finger(pbones, f, *pressed, DIST_FLEX_PRESS, off_frame)
+            # Wait in the flat rest through a long idle stretch, then approach
+            # the string over just a few frames, so an idle finger doesn't
+            # drift for a second toward its next press (reaching across a
+            # neighbour early - the source of the finger crossings).
+            hold_frame = hover_frame - APPROACH_LEAD
+            if hold_frame - prev_end > HOLD_GAP:
+                _relax_finger(pbones, f, hold_frame)
 
-                # Lift off the string after the note, but only up to where
-                # the next event takes this finger over (its attack or idle
-                # arrival), so the lift never lands mid-gap fighting a hover.
-                release_frame = off_frame + release_frames
-                if i + 1 < len(ev_info):
-                    nxt = ev_info[i + 1]
-                    if f in nxt["press"]:
-                        nk = (to_frame(nxt["press"][f]["start"])
-                              - attack_frames(nxt["press"][f]))
-                    else:
-                        nk = to_frame(nxt["arrive"])
-                    release_frame = min(release_frame, nk - 0.5)
-                if release_frame > off_frame + 0.25:
-                    _pose_finger(pbones, f, *hover, DIST_FLEX_HOVER,
-                                 release_frame)
-                    prev_end = release_frame
-                else:
-                    prev_end = off_frame
-                last_frame = max(last_frame, off_frame + release_frames)
-            else:
-                # Idle: hover over this finger's in-order fret slot, arched
-                # just above the strings.
-                slot = max(1.0, min(float(fret_layout.NUM_FRETS),
-                                    info["slots"][f]))
-                ty = fret_layout.press_y(slot)
-                tz = fret_layout.STRING_Z + HOVER_LIFT
-                hov = ik(rinv, knuckle, info["mean_x"], ty, tz, DIST_FLEX_HOVER)
-                key_a = to_frame(info["arrive"])
-                if prev_end is not None:
-                    key_a = max(key_a, prev_end + 0.5)
-                _pose_finger(pbones, f, *hov, DIST_FLEX_HOVER, key_a)
-                prev_end = key_a
-                if info["depart"] is not None:
-                    key_d = to_frame(info["depart"])
-                    if key_d > key_a + 0.5:
-                        _pose_finger(pbones, f, *hov, DIST_FLEX_HOVER, key_d)
-                        prev_end = key_d
-                last_frame = max(last_frame, prev_end)
+            # Lift back to the flat rest promptly after the note (never
+            # lingering in the pressed/hooked pose while the next grip forms),
+            # and be flat a frame before the next grip's onset so this finger
+            # is out of the way of whatever presses there.
+            relax_frame = off_frame + RELAX_LIFT
+            nxt_grip = next_onset_after(off_frame)
+            if nxt_grip is not None:
+                relax_frame = min(relax_frame, nxt_grip - 1.0)
+            if i + 1 < len(items):
+                nxt = items[i + 1][0]
+                nxt_hover = max(frame_start,
+                                to_frame(nxt["start"]) - attack_frames(nxt))
+                relax_frame = min(relax_frame, nxt_hover - 0.5)
+            # Begin the lift early enough to finish in time - even a hair
+            # before the note's notated end when the next grip lands almost
+            # immediately, rather than hooking through the frame it arrives on.
+            pressed_end = min(off_frame, relax_frame - RELAX_LIFT)
+            pressed_end = max(pressed_end, on_frame + 0.5)
+            relax_frame = max(relax_frame, pressed_end + 1.0)
+
+            _pose_finger(pbones, f, hover[0], hover[1], hover[2],
+                         DIST_FLEX_HOVER, hover_frame)
+            _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                         DIST_FLEX_PRESS, on_frame)
+            _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                         DIST_FLEX_PRESS, pressed_end)
+            _relax_finger(pbones, f, relax_frame)
+            prev_end = relax_frame
+            last_frame = max(last_frame, off_frame + release_frames)
 
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):
