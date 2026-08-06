@@ -317,8 +317,11 @@ def build_fret_hand(coll, mat):
 
     # Static thumb reaching under the neck to press its back, opposite the
     # fingers (specified as a world offset from the wrist, converted into
-    # the tilted armature's local frame).
-    thumb_center_w = (-0.050, 0.008, -0.022)
+    # the tilted armature's local frame). It sits on the INDEX/radial edge of
+    # the palm (world +y here maps to armature-local +x, the index side --
+    # cf. FRET_FINGERS, index knuckle x=+0.037), where a real hand's thumb
+    # attaches, rather than bisecting the back of the hand.
+    thumb_center_w = (-0.050, 0.040, -0.022)
     thumb_dir_w = mathutils.Vector((-0.94, 0.12, -0.32)).normalized()
     c_local = _fret_local_offset(thumb_center_w)
     d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w))
