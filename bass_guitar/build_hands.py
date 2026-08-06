@@ -321,13 +321,26 @@ def build_fret_hand(coll, mat):
     # the palm (world +y here maps to armature-local +x, the index side --
     # cf. FRET_FINGERS, index knuckle x=+0.037), where a real hand's thumb
     # attaches, rather than bisecting the back of the hand.
+    # It is built as TWO segments meeting at a knuckle (the thumb's IP joint)
+    # so it reads as a jointed thumb rather than one rigid stick: a longer
+    # proximal segment leaving the palm, then a shorter distal segment that
+    # flexes at the joint to lie flatter against the neck (as a thumb pad
+    # pressing the back does), tapering toward the tip. Same static parenting
+    # to the wrist as the pluck/pick-hand thumbs.
     thumb_center_w = (-0.050, 0.040, -0.022)
     thumb_dir_w = mathutils.Vector((-0.94, 0.12, -0.32)).normalized()
-    c_local = _fret_local_offset(thumb_center_w)
-    d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w))
-    _bone_box(arm_obj, coll, mat, "wrist", (0.019, 0.075, 0.016),
-              (c_local[0], c_local[1] - 0.030, c_local[2]),
-              rotation=d_local.to_track_quat('Y', 'Z').to_euler())
+    c_local = mathutils.Vector(_fret_local_offset(thumb_center_w))
+    d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w)).normalized()
+    thumb_len, prox_len, dist_len = 0.075, 0.045, 0.030
+    base = c_local - d_local * (thumb_len / 2.0)   # meets the palm
+    knuckle = base + d_local * prox_len            # IP joint
+    # Distal phalanx flexes ~18 deg at the knuckle, curling the tip to lie
+    # flatter along the neck's back.
+    dist_dir = (mathutils.Matrix.Rotation(math.radians(18), 4, 'X')
+                @ d_local).normalized()
+    tip = knuckle + dist_dir * dist_len
+    _seg_box(arm_obj, coll, mat, 0.019, 0.016, base, knuckle)
+    _seg_box(arm_obj, coll, mat, 0.017, 0.015, knuckle, tip)
     return arm_obj
 
 
