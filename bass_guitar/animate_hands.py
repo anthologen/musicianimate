@@ -77,12 +77,15 @@ HOLD_GAP = 8.0         # frames; an idle stretch longer than this gets a flat-re
                        # key so the finger waits flat instead of drifting for many
                        # frames through an in-between pose that crosses a neighbour
 
-# Idle fretting fingers rest in a loose curl. A touch more flexion than the
-# piano's RELAXED retracts the fingertip back over the treble edge instead of
-# letting it lie flat across all four strings, so a finger reaching in to press
-# a bass-side string passes the idle neighbours cleanly instead of crossing
-# through the middle of them (frames ~106/109 of the demo).
-REST_FRET = (0.62, 0.88, 0.50)
+# Idle fretting fingers rest in a firm loose curl - notably more flexion than
+# the piano's RELAXED. This retracts the fingertip into a compact hook back
+# over the treble edge instead of letting the finger lie stretched flat across
+# all four strings. A stretched idle finger reads as a stiff bar and, worse,
+# passes UNDER a neighbour that is pressing (the middle draping over the idle
+# index at frame ~103) or gets crossed by a finger reaching in to a bass-side
+# string (frames ~106/109). Curled into a hook, an idle finger tucks clear of
+# both.
+REST_FRET = (0.95, 1.15, 0.65)
 
 
 def _rest_fret(pbones, finger, frame):
