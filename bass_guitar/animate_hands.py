@@ -77,6 +77,18 @@ HOLD_GAP = 8.0         # frames; an idle stretch longer than this gets a flat-re
                        # key so the finger waits flat instead of drifting for many
                        # frames through an in-between pose that crosses a neighbour
 
+# Idle fretting fingers rest in a loose curl. A touch more flexion than the
+# piano's RELAXED retracts the fingertip back over the treble edge instead of
+# letting it lie flat across all four strings, so a finger reaching in to press
+# a bass-side string passes the idle neighbours cleanly instead of crossing
+# through the middle of them (frames ~106/109 of the demo).
+REST_FRET = (0.62, 0.88, 0.50)
+
+
+def _rest_fret(pbones, finger, frame):
+    """The fret hand's idle-finger rest: a looser curl than _relax_finger."""
+    _pose_finger(pbones, finger, 0.0, *REST_FRET, frame)
+
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
 # in the fretboard plane; roll spins about the reach axis, arching a
@@ -309,7 +321,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         return frame_start + t * fps
 
     for f in FRET_FINGERS:
-        _relax_finger(pbones, f, frame_start)
+        _rest_fret(pbones, f, frame_start)
 
     events = [ev for ev in _group_events(notes)
               if any(n["fret"] > 0 for n in ev["notes"])]
@@ -403,7 +415,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             # neighbour early - the source of the finger crossings).
             hold_frame = hover_frame - APPROACH_LEAD
             if hold_frame - prev_end > HOLD_GAP:
-                _relax_finger(pbones, f, hold_frame)
+                _rest_fret(pbones, f, hold_frame)
 
             # Lift back to the flat rest promptly after the note (never
             # lingering in the pressed/hooked pose while the next grip forms),
@@ -431,7 +443,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                          DIST_FLEX_PRESS, on_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
                          DIST_FLEX_PRESS, pressed_end)
-            _relax_finger(pbones, f, relax_frame)
+            _rest_fret(pbones, f, relax_frame)
             prev_end = relax_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
