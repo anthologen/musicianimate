@@ -77,20 +77,30 @@ HOLD_GAP = 8.0         # frames; an idle stretch longer than this gets a flat-re
                        # key so the finger waits flat instead of drifting for many
                        # frames through an in-between pose that crosses a neighbour
 
-# Idle fretting fingers rest in a firm loose curl - notably more flexion than
-# the piano's RELAXED. This retracts the fingertip into a compact hook back
-# over the treble edge instead of letting the finger lie stretched flat across
-# all four strings. A stretched idle finger reads as a stiff bar and, worse,
-# passes UNDER a neighbour that is pressing (the middle draping over the idle
-# index at frame ~103) or gets crossed by a finger reaching in to a bass-side
-# string (frames ~106/109). Curled into a hook, an idle finger tucks clear of
-# both.
-REST_FRET = (0.95, 1.15, 0.65)
+# Idle fretting fingers rest in a moderate loose curl - a bit more flexion than
+# the piano's RELAXED so the finger reads as a relaxed hook rather than a stiff
+# bar lying flat across the strings, but NOT so deep that the fingertip retracts
+# back over the treble edge: an over-curled idle finger pulls its tip inward and
+# stacks it directly under a neighbour that is pressing the treble string (the
+# index ending up beneath the pressing middle at frame ~103). At this moderate
+# curl each idle tip stays out over its own (bass-side) string, clear of a
+# treble press.
+REST_FRET = (0.60, 0.82, 0.48)
+
+# A gentle splay so the idle fingers fan over their own strings like a relaxed
+# hand instead of lying parallel. The wrap geometry means this yaw barely shifts
+# a fingertip across the strings (the curl depth above is what governs that), so
+# it is kept small - just enough to angle the hooks apart. Index (1) -> pinky (4)
+# fan from the treble edge toward the bass side.
+REST_FAN = 0.30
+_REST_FAN_DIR = {1: -1.0, 2: -0.34, 3: 0.34, 4: 1.0}
 
 
 def _rest_fret(pbones, finger, frame):
-    """The fret hand's idle-finger rest: a looser curl than _relax_finger."""
-    _pose_finger(pbones, finger, 0.0, *REST_FRET, frame)
+    """The fret hand's idle-finger rest: a moderate hooked curl with a gentle
+    outward splay, so idle fingers sit side by side over their own strings."""
+    yaw = REST_FAN * _REST_FAN_DIR.get(finger, 0.0)
+    _pose_finger(pbones, finger, yaw, *REST_FRET, frame)
 
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
