@@ -384,6 +384,15 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     # Which finger presses which note on each event (idle otherwise).
     event_press = [{n["finger"]: n for n in _press_notes(ev)} for ev in events]
 
+    # When the PREVIOUS event's grip releases (its pressing fingers lift): an
+    # approaching finger must not reach across the neck until then, or it drifts
+    # through a finger still holding the previous grip (index crossing the still-
+    # pressing middle at ~106). frame_start for the first event.
+    prev_release = [frame_start]
+    for i in range(1, len(events)):
+        ends = [to_frame(nn["end"]) for nn in event_press[i - 1].values()]
+        prev_release.append(max(ends) if ends else frame_start)
+
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
         return max_attack_frames - vel_t * (max_attack_frames -
@@ -438,7 +447,19 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             off_frame = max(on_frame, to_frame(n["end"]))
             hover_frame = max(frame_start, on_frame - attack_frames(n))
             hover_frame = max(hover_frame, prev_end + 0.5)
-            hover_frame = min(hover_frame, on_frame)
+            # Don't reach across the neck until the previous grip has released,
+            # so an approaching finger doesn't drift through a finger still
+            # pressing it (index vs the still-down middle at ~106). Keep at least
+            # a short reach-in window so the press still eases on.
+            hover_frame = max(hover_frame, prev_release[i])
+            hover_frame = min(hover_frame, on_frame - 0.75, on_frame)
+            hover_frame = max(hover_frame, prev_end + 0.5)
+            # Hold the idle-hover lane (in THIS event's hand frame, where the
+            # hand has arrived) right up to the reach-in, so the finger glides in
+            # its own lane through the hand's move instead of drifting across.
+            hold_frame = hover_frame - 0.75
+            if hold_frame > prev_end + 0.75:
+                key_idle(f, target, rot, hold_frame)
 
             # Lift back to the idle hover promptly after the note (never
             # lingering in the pressed pose while the next grip forms), and be
