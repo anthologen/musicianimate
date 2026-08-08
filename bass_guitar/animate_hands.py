@@ -85,29 +85,57 @@ RELAX_LIFT = 2.5       # frames to lift a finger off a note back to its idle hov
 # strings at its own fret - so it stays clear of the pressing fingers at other
 # frets and glides with the hand between events, without the tight clench that
 # fully retracting to the treble edge would need.
-IDLE_HOVER = 0.013      # idle fingertip height above the strings
+IDLE_HOVER = 0.013      # idle fingertip height above the strings (default reach)
 IDLE_FORWARD = 0.010    # idle reach toward the nut from the knuckle (gentle angle)
 IDLE_ACROSS = 0.032     # idle reach ACROSS toward the strings from the treble edge
 IDLE_DIST_FLEX = 0.30   # distal curl of an idle finger
 
+# An idle finger's default hover (over the strings at its own fret) still runs
+# alongside a neighbour that is pressing when the presser's arched finger bulges
+# into it (index vs the pressing middle at ~frame 100). So the idle pose is not
+# a single reach: it is a small per-event SEARCH over how far the finger reaches
+# across and how high it hovers, picking the pose that stays farthest from the
+# pressing fingers' predicted finger boxes and, once it is clear, sits closest to
+# the natural default. Lifting the whole finger and/or shifting which string it
+# hovers over lets it clear the presser's arch.
+IDLE_CLEAR_TARGET = 0.016   # clearance (m) from a pressing finger that counts as clear
+_IDLE_ACROSS_GRID = (0.014, 0.024, 0.032, 0.040, 0.050)
+_IDLE_LIFT_GRID = (0.013, 0.028, 0.045, 0.065, 0.090)
 
-def _idle_finger_pose(f, target, rot):
-    """(yaw, prox, mid) hovering finger ``f`` just over the strings at its own
-    fret. The knuckles ride the treble edge spread ALONG the neck (one per
-    fret), so an idle finger reaching only PARTWAY across - to hover over the
-    strings rather than the full width - stays over its own fret, clear of the
-    pressing fingers at other frets, without the tight clench that fully
-    retracting to the treble edge would need."""
+
+def _idle_finger_pose(f, target, rot, press_chains=()):
+    """(yaw, prox, mid) hovering finger ``f`` over the strings at its own fret,
+    chosen from a small grid of reach/lift poses to keep the finger's predicted
+    box clear of the ``press_chains`` (world joint chains of the fingers pressing
+    this event), then as close to the natural default as that allows."""
     spec = FRET_FINGERS[f]
     rmat = _fret_rotation(*rot)
     ko = rmat @ mathutils.Vector(spec["knuckle"])
     knuckle = (target[0] + ko.x, target[1] + ko.y, target[2] + ko.z)
-    tgt = (knuckle[0] - IDLE_ACROSS, knuckle[1] + IDLE_FORWARD,
-           fret_layout.STRING_Z + IDLE_HOVER)
-    local = rmat.transposed() @ mathutils.Vector(
-        (tgt[0] - knuckle[0], tgt[1] - knuckle[1], tgt[2] - knuckle[2]))
-    return _finger_ik(local.x, local.y, -local.z, spec["lengths"],
-                      IDLE_DIST_FLEX)
+    inv = rmat.transposed()
+    best = None
+    for across in _IDLE_ACROSS_GRID:
+        for lift in _IDLE_LIFT_GRID:
+            tgt = (knuckle[0] - across, knuckle[1] + IDLE_FORWARD,
+                   fret_layout.STRING_Z + lift)
+            local = inv @ mathutils.Vector(
+                (tgt[0] - knuckle[0], tgt[1] - knuckle[1], tgt[2] - knuckle[2]))
+            yaw, prox, mid = _finger_ik(local.x, local.y, -local.z,
+                                        spec["lengths"], IDLE_DIST_FLEX)
+            if press_chains:
+                chain = _finger_fk(target, rmat, spec, tgt, IDLE_DIST_FLEX)
+                clr = min(_seg_dist(chain[k], chain[k + 1], pc[m], pc[m + 1])
+                          for pc in press_chains
+                          for k in range(3) for m in range(3))
+            else:
+                clr = IDLE_CLEAR_TARGET
+            # Maximise clearance up to the target; once clear, prefer the pose
+            # nearest the natural default reach/lift.
+            reg = abs(across - IDLE_ACROSS) + abs(lift - IDLE_HOVER)
+            score = min(clr, IDLE_CLEAR_TARGET) - 0.08 * reg
+            if best is None or score > best[0]:
+                best = (score, yaw, prox, mid)
+    return best[1], best[2], best[3]
 
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
@@ -381,8 +409,23 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         else:
             prev_t = arrive
 
-    # Which finger presses which note on each event (idle otherwise).
+    # Which finger presses which note on each event (idle otherwise), plus the
+    # predicted world joint chain of each pressing finger, so idle fingers can be
+    # posed to keep clear of them.
     event_press = [{n["finger"]: n for n in _press_notes(ev)} for ev in events]
+    event_press_chains = []
+    for ev, target, rot in zip(events, targets, rots):
+        rmat = _fret_rotation(*rot)
+        ch = {}
+        for n in _press_notes(ev):
+            ch[n["finger"]] = _finger_fk(target, rmat, FRET_FINGERS[n["finger"]],
+                                         (n["x"], n["y"], n["z"]), DIST_FLEX_PRESS)
+        event_press_chains.append(ch)
+
+    def other_press_chains(f, i):
+        """Chains of the fingers pressing event i other than f (the ones an
+        idle/holding f must stay clear of)."""
+        return [c for g, c in event_press_chains[i].items() if g != f]
 
     # When the PREVIOUS event's grip releases (its pressing fingers lift): an
     # approaching finger must not reach across the neck until then, or it drifts
@@ -406,15 +449,15 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 return o
         return None
 
-    def key_idle(f, target, rot, frame):
-        y, p, m = _idle_finger_pose(f, target, rot)
+    def key_idle(f, target, rot, frame, press_chains):
+        y, p, m = _idle_finger_pose(f, target, rot, press_chains)
         _pose_finger(pbones, f, y, p, m, IDLE_DIST_FLEX, frame)
 
     last_frame = frame_start
     for f in FRET_FINGERS:
         spec = FRET_FINGERS[f]
         # Start idle over the finger's own string, at the first event's hand pose.
-        key_idle(f, targets[0], rots[0], frame_start)
+        key_idle(f, targets[0], rots[0], frame_start, other_press_chains(f, 0))
         prev_end = frame_start
         for i, (ev, target, rot) in enumerate(zip(events, targets, rots)):
             onset = to_frame(ev["t"])
@@ -422,7 +465,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 # Idle: hover over the finger's own string, gliding into place
                 # with the hand. One key at the event onset keeps it in its lane.
                 frame = max(onset, prev_end + 0.5)
-                key_idle(f, target, rot, frame)
+                key_idle(f, target, rot, frame, other_press_chains(f, i))
                 prev_end = frame
                 continue
 
@@ -459,7 +502,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             # its own lane through the hand's move instead of drifting across.
             hold_frame = hover_frame - 0.75
             if hold_frame > prev_end + 0.75:
-                key_idle(f, target, rot, hold_frame)
+                key_idle(f, target, rot, hold_frame, other_press_chains(f, i))
 
             # Lift back to the idle hover promptly after the note (never
             # lingering in the pressed pose while the next grip forms), and be
@@ -480,7 +523,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                          DIST_FLEX_PRESS, on_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
                          DIST_FLEX_PRESS, pressed_end)
-            key_idle(f, target, rot, relax_frame)
+            key_idle(f, target, rot, relax_frame, other_press_chains(f, i))
             prev_end = relax_frame
             last_frame = max(last_frame, off_frame + release_frames)
 
