@@ -98,9 +98,9 @@ IDLE_DIST_FLEX = 0.30   # distal curl of an idle finger
 # pressing fingers' predicted finger boxes and, once it is clear, sits closest to
 # the natural default. Lifting the whole finger and/or shifting which string it
 # hovers over lets it clear the presser's arch.
-IDLE_CLEAR_TARGET = 0.016   # clearance (m) from a pressing finger that counts as clear
-_IDLE_ACROSS_GRID = (0.014, 0.024, 0.032, 0.040, 0.050)
-_IDLE_LIFT_GRID = (0.013, 0.028, 0.045, 0.065, 0.090)
+IDLE_CLEAR_TARGET = 0.020   # clearance (m) from a pressing finger that counts as clear
+_IDLE_ACROSS_GRID = (0.004, 0.014, 0.024, 0.032, 0.042, 0.052)
+_IDLE_LIFT_GRID = (0.013, 0.030, 0.050, 0.075, 0.105, 0.135)
 
 
 def _idle_finger_pose(f, target, rot, press_chains=()):
@@ -150,6 +150,14 @@ WRIST_ROLL_REG = 0.3
 WRIST_COHERE = 2.0     # per rad^2 of pose change from the previous event
 TOUCH_CLEAR = 0.013    # axis distance where finger boxes sit flush
 COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
+# The wrist search also gives the IDLE fingers room: it penalizes rotations that
+# park a pressing finger's box close to where an idle finger's default hover
+# sits (their proximals near the shared treble edge - the residual index/ring
+# contact at the octave). Softer than the press-press term so it only nudges the
+# wrist when a real gap is available, and the per-finger idle search still does
+# the fine clearing on top.
+WRIST_IDLE_CLEAR = 0.015   # idle-vs-press clearance the wrist search aims to open
+IDLE_COLLIDE_W = 9000.0    # weight of the idle-clearance term (< COLLIDE_W)
 
 # --- pluck hand ------------------------------------------------------------
 # The hand is over the strings on the thick (-x) side with fingers reaching
@@ -301,8 +309,10 @@ def _finger_fk(wrist, rot, spec, tip, flex):
     return pts
 
 
-def _pose_cost(press, wrist, rot):
-    """IK strain plus predicted finger-collision penalty of one pose."""
+def _pose_cost(press, wrist, rot, idle=()):
+    """IK strain plus predicted finger-collision penalty of one pose. ``idle``
+    are the non-pressing fingers, whose default hover is kept clear of the
+    pressing fingers too (a softer penalty than press-press)."""
     cost = 0.0
     inv = rot.transposed()
     chains = []
@@ -323,6 +333,18 @@ def _pose_cost(press, wrist, rot):
                        for k in range(3) for m in range(3))
             if dmin < TOUCH_CLEAR:
                 cost += COLLIDE_W * (TOUCH_CLEAR - dmin) ** 2
+    for f in idle:
+        spec = FRET_FINGERS[f]
+        ko = rot @ mathutils.Vector(spec["knuckle"])
+        knuckle = (wrist[0] + ko.x, wrist[1] + ko.y, wrist[2] + ko.z)
+        tgt = (knuckle[0] - IDLE_ACROSS, knuckle[1] + IDLE_FORWARD,
+               fret_layout.STRING_Z + IDLE_HOVER)
+        ich = _finger_fk(wrist, rot, spec, tgt, IDLE_DIST_FLEX)
+        for pc in chains:
+            dmin = min(_seg_dist(ich[k], ich[k + 1], pc[m], pc[m + 1])
+                       for k in range(3) for m in range(3))
+            if dmin < WRIST_IDLE_CLEAR:
+                cost += IDLE_COLLIDE_W * (WRIST_IDLE_CLEAR - dmin) ** 2
     return cost
 
 
@@ -334,6 +356,8 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
     press = _press_notes(event)
     if not press:
         return _solve_wrist(press, _fret_rotation(0, 0), KNUCKLE_Z), 0.0, 0.0
+    pressed_fingers = {n["finger"] for n in press}
+    idle = [f for f in FRET_FINGERS if f not in pressed_fingers]
 
     cohere = 0.0
     if prev_pose is not None and dt is not None:
@@ -350,7 +374,7 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
             wrist = _solve_wrist(press, rot, KNUCKLE_Z)
             cost = (WRIST_YAW_REG * yaw * yaw
                     + WRIST_ROLL_REG * roll * roll
-                    + _pose_cost(press, wrist, rot))
+                    + _pose_cost(press, wrist, rot, idle))
             if cohere:
                 cost += cohere * ((yaw - prev_pose[0]) ** 2
                                   + (roll - prev_pose[1]) ** 2)
