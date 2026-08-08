@@ -481,6 +481,41 @@ def pick_world_offset(v):
     return tuple(PICK_HAND_ROT @ mathutils.Vector(v))
 
 
+def _curled_finger(knuckle, lengths, flex_deg):
+    """Points knuckle -> PIP -> DIP -> tip for a finger curling toward the
+    palm (local -z). Each phalanx adds its flexion about the knuckle-parallel
+    local x axis (curl is negative x in this rig's finger frame, cf.
+    FINGER_ROT_LIMIT), and the angle is CUMULATIVE, so a big enough total
+    folds the fingertip back into the fist."""
+    pts = [mathutils.Vector(knuckle)]
+    cum = 0.0
+    for length, flex in zip(lengths, flex_deg):
+        cum += flex
+        d = (mathutils.Matrix.Rotation(math.radians(-cum), 3, 'X')
+             @ mathutils.Vector((0.0, 1.0, 0.0)))
+        pts.append(pts[-1] + d * length)
+    return pts
+
+
+# The picking fist's four fingers are FULL three-phalanx fingers -- the SAME
+# phalanx lengths as the fretting hand (FRET_FINGERS), so the two hands read as
+# a matched pair -- curled into a relaxed fist rather than left as stubs. The
+# thumb and a loosely-curled index pinch the pick (the index flexes least, so it
+# lies alongside the pick edge); the middle/ring/pinky fold in behind it, each a
+# touch tighter, for a natural cascade. Each entry is
+# (knuckle xyz, phalanx lengths, per-joint flexion MCP/PIP/DIP in degrees).
+# The MCP flexion is kept moderate (the long proximal is what dives deepest) and
+# the PIP/DIP tuck the tip back UP into the palm, so the whole fist stays compact
+# and its lowest point clears the string plane (~the pick tip's depth) instead of
+# punching through the strings -- the same clearance concern the short stubs had.
+PICK_FIST = {
+    "index":  ((-0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (40, 66, 50)),
+    "middle": ((-0.010, 0.037, 0.021), FRET_FINGERS[2]["lengths"], (52, 98, 62)),
+    "ring":   (( 0.010, 0.036, 0.020), FRET_FINGERS[3]["lengths"], (54, 100, 62)),
+    "pinky":  (( 0.028, 0.034, 0.019), FRET_FINGERS[4]["lengths"], (56, 102, 60)),
+}
+
+
 def build_pick_hand(coll, mat):
     """The stylized picking fist (guitar rig), for --style pick."""
     arm_obj = _new_armature("PickHand", coll, PICK_HAND_ROT.to_4x4())
@@ -495,31 +530,13 @@ def build_pick_hand(coll, mat):
     _bone_box(arm_obj, coll, mat, "wrist", (0.070, 0.066, 0.032),
               (0.0, 0.008 - 0.030, 0.013))
     # Finger chains as static boxes (RIGHT hand: thumb/index on the -x side,
-    # pinky on +x). The INDEX curls under the pick to hold it against the thumb;
-    # the MIDDLE / RING / PINKY trail it in a LOOSE, relaxed curl -- a gentle open
-    # hook, tips NOT tucked hard into the palm -- the natural bass-pick grip.
-    knuckles = {  # name: (knuckle x, length scale)
-        "index": (-0.028, 1.00), "middle": (-0.009, 1.05),
-        "ring": (0.011, 0.98), "pinky": (0.030, 0.84),
-    }
-    for name, (kx, scale) in knuckles.items():
-        if name == "index":
-            # curls under to hold the pick, but kept up off the strings: the tip
-            # tucks BACK toward the palm rather than poking down past the pick.
-            knuckle = mathutils.Vector((kx, 0.042, 0.010))
-            mid = knuckle + mathutils.Vector((-0.002, 0.013, -0.022 * scale))
-            tip = mid + mathutils.Vector((0.0, -0.018, 0.004 * scale))
-        else:
-            # curl INTO the palm -- a compact, relaxed fist like the reference
-            # grip: knuckles sit a touch higher (off the strings), the proximal
-            # bends down only shallowly, then the distal tucks BACK toward the palm
-            # and up, so the fingertips fold into the fist and clear the strings
-            # instead of splaying over them and poking through.
-            knuckle = mathutils.Vector((kx, 0.042, 0.015))
-            mid = knuckle + mathutils.Vector((0.0, 0.010 * scale, -0.016 * scale))
-            tip = mid + mathutils.Vector((0.0, -0.022 * scale, 0.010 * scale))
-        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, knuckle, mid)
-        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, mid, tip)
+    # pinky on +x). Full three-phalanx fingers (matching the fretting hand)
+    # curled into a relaxed fist around the pick -- see PICK_FIST.
+    for knuckle, lengths, flex in PICK_FIST.values():
+        pts = _curled_finger(knuckle, lengths, flex)
+        for a, b in zip(pts[:-1], pts[1:]):
+            _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H,
+                     tuple(a), tuple(b))
 
     # Thumb lies along the thumb (-x) edge, its pad pressing down on the pick
     # so the pick is pinched between the thumb and the index's side.
