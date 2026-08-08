@@ -510,14 +510,28 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         # Start idle over the finger's own string, at the first event's hand pose.
         key_idle(f, targets[0], rots[0], frame_start, other_press_chains(f, 0))
         prev_end = frame_start
+        prev_tr = None   # (target, rot) of the previous event, for holding idle
         for i, (ev, target, rot) in enumerate(zip(events, targets, rots)):
             onset = to_frame(ev["t"])
             if f not in event_press[i]:
+                # Hold the previous idle pose until the previous grip releases,
+                # so a finger idle across two grips doesn't drift bass-ward over
+                # a still-pressing neighbour during the first grip's sustain (the
+                # idle ring over the pressing index through the octave). Only when
+                # the previous grip sustains well past this event's arrival, so a
+                # tight reach-in transition is left to glide.
+                hold_prev = prev_release[i] - 0.5
+                if (prev_tr is not None
+                        and prev_end + 0.75 < hold_prev < onset - 3.0):
+                    key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
+                             other_press_chains(f, i - 1))
+                    prev_end = hold_prev
                 # Idle: hover over the finger's own string, gliding into place
                 # with the hand. One key at the event onset keeps it in its lane.
                 frame = max(onset, prev_end + 0.5)
                 key_idle(f, target, rot, frame, other_press_chains(f, i))
                 prev_end = frame
+                prev_tr = (target, rot)
                 continue
 
             n = event_press[i][f]
@@ -548,6 +562,16 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             hover_frame = max(hover_frame, prev_release[i])
             hover_frame = min(hover_frame, on_frame - 0.75, on_frame)
             hover_frame = max(hover_frame, prev_end + 0.5)
+            # Hold the finger's PREVIOUS idle pose (in the previous event's hand
+            # frame) until that grip releases, so an idle finger doesn't drift
+            # toward this press during the previous event's sustain - the middle
+            # creeping bass-ward over the pressing index all through the octave
+            # before its own fret-10 press.
+            hold_prev = prev_release[i] - 0.5
+            if prev_tr is not None and prev_end + 0.75 < hold_prev < hover_frame - 0.5:
+                key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
+                         other_press_chains(f, i - 1))
+                prev_end = hold_prev
             # Hold the idle-hover lane (in THIS event's hand frame, where the
             # hand has arrived) right up to the reach-in, so the finger glides in
             # its own lane through the hand's move instead of drifting across.
@@ -576,6 +600,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                          DIST_FLEX_PRESS, pressed_end)
             key_idle(f, target, rot, relax_frame, other_press_chains(f, i))
             prev_end = relax_frame
+            prev_tr = (target, rot)
             last_frame = max(last_frame, off_frame + release_frames)
 
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
