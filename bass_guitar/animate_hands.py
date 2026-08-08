@@ -107,7 +107,13 @@ def _idle_finger_pose(f, target, rot, press_chains=()):
     """(yaw, prox, mid) hovering finger ``f`` over the strings at its own fret,
     chosen from a small grid of reach/lift poses to keep the finger's predicted
     box clear of the ``press_chains`` (world joint chains of the fingers pressing
-    this event), then as close to the natural default as that allows."""
+    this event), then as close to the natural default as that allows.
+
+    A high lift would raise the fingertip above its own knuckle and so bow the
+    MCP backward - the idle fingers hyperextending to ~80 deg to clear a presser.
+    A real hand lifts an idle finger WITHIN the joint's ~25-30 deg extension, so
+    the proximal is clamped to FINGER_MCP_HYPEREXT here and the clearance is
+    scored on that clamped pose (a lifted, not a bent-back, finger)."""
     spec = FRET_FINGERS[f]
     rmat = _fret_rotation(*rot)
     ko = rmat @ mathutils.Vector(spec["knuckle"])
@@ -120,10 +126,12 @@ def _idle_finger_pose(f, target, rot, press_chains=()):
                    fret_layout.STRING_Z + lift)
             local = inv @ mathutils.Vector(
                 (tgt[0] - knuckle[0], tgt[1] - knuckle[1], tgt[2] - knuckle[2]))
-            yaw, prox, mid = _finger_ik(local.x, local.y, -local.z,
-                                        spec["lengths"], IDLE_DIST_FLEX)
+            yaw, prox, mid = _fret_ik(local.x, local.y, -local.z,
+                                      spec["lengths"], IDLE_DIST_FLEX)
+            prox = max(-FINGER_MCP_HYPEREXT, prox)   # lift, never bow the MCP back
             if press_chains:
-                chain = _finger_fk(target, rmat, spec, tgt, IDLE_DIST_FLEX)
+                chain = _finger_fk_from_angles(target, rmat, spec, yaw, prox,
+                                               mid, IDLE_DIST_FLEX)
                 clr = min(_seg_dist(chain[k], chain[k + 1], pc[m], pc[m + 1])
                           for pc in press_chains
                           for k in range(3) for m in range(3))
@@ -158,15 +166,23 @@ COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
 # the fine clearing on top.
 WRIST_IDLE_CLEAR = 0.015   # idle-vs-press clearance the wrist search aims to open
 IDLE_COLLIDE_W = 9000.0    # weight of the idle-clearance term (< COLLIDE_W)
-# A pressing finger must not reach ACROSS another finger's knuckle to get to its
-# string - that is a finger crossing UNDER a neighbour (the index reaching under
-# the idle middle to the bass string at the octave), which no real hand does. If
-# all four knuckles bunch at the treble edge, a finger pressing a bass string
-# does exactly that; a bit of wrist yaw instead spreads the knuckles diagonally
-# so each finger reaches its string from its own side. Penalize the wrist for any
-# pose where a presser's reach passes another knuckle, strongly enough to prefer
-# the spread.
-CROSS_W = 20000.0          # per m^2 a presser overshoots a crossed knuckle
+# Biomechanical anti-crossing. A finger crossing UNDER a neighbour (the index
+# reaching under the idle middle to the bass string at the octave) is, at root, a
+# finger deviating too far SIDEWAYS at the knuckle: real MCP abduction/adduction
+# tops out around 25 deg (Thieme 2024; AAOS goniometry). So the finger IK's yaw is
+# hard-capped at FINGER_MCP_SPLAY, and the wrist search PENALIZES any pose that
+# would demand more splay than that from a pressing finger - which pushes the hand
+# (wrist yaw/roll and slide) to do the reaching instead, exactly as a real player
+# angles the whole hand for an octave grip rather than swinging one finger under
+# the others. (This replaces an earlier knuckle-x "overshoot" term that, because it
+# ignored how the fingers spread ALONG the neck, fired on the natural bunched-
+# knuckle pose and drove the hand into a ~57 deg over-splayed diagonal instead.)
+# A second cap forbids MCP hyperextension past its ~25-30 deg norm, so a finger
+# stretching for a far string bends at the knuckle rather than bowing backward.
+FINGER_MCP_SPLAY = math.radians(26.0)    # max abduction/adduction of a fret finger
+FINGER_MCP_HYPEREXT = math.radians(28.0)  # max backward (extension) tilt at the MCP
+SPLAY_W = 8000.0            # per rad^2 a presser's target demands beyond the splay cap
+HYPEREXT_W = 3000.0         # per rad^2 a presser's MCP is driven past its extension cap
 
 # --- pluck hand ------------------------------------------------------------
 # The hand is over the strings on the thick (-x) side with fingers reaching
@@ -219,6 +235,25 @@ ARM_FOLLOW_T = 0.05     # s after the strike the follow-through peaks
 # ===========================================================================
 # Fret hand (ported from the guitar animator, barre logic removed)
 # ===========================================================================
+
+def _fret_ik(dx, dy, dv, lengths, dist_flex):
+    """Fret-finger IK: the piano's closed-form two-link solve, but with the
+    knuckle yaw (MCP abduction) clamped to the anatomical FINGER_MCP_SPLAY
+    instead of the piano's looser MAX_YAW. Keeping the cap here (rather than
+    mutating the shared piano constant) means every predicted and keyed fret
+    pose reaches its string within a realistic sideways deviation; the wrist
+    search below is what actually moves the hand so the finger does not HAVE to
+    exceed it. Returns (yaw, prox, mid) like _finger_ik."""
+    yaw, prox, mid = _finger_ik(dx, dy, dv, lengths, dist_flex)
+    return (max(-FINGER_MCP_SPLAY, min(FINGER_MCP_SPLAY, yaw)), prox, mid)
+
+
+def _splay_demand(dx, dy):
+    """The knuckle yaw the raw IK WANTS for this in-plane target, before the
+    FINGER_MCP_SPLAY clamp - i.e. how far the finger would have to deviate
+    sideways. The wrist search penalizes the part of this beyond the cap."""
+    return abs(math.atan2(dx, max(dy, 0.012)))
+
 
 def _press_notes(event):
     """The event's fretted notes as press items, with same-fret fingers
@@ -298,16 +333,11 @@ def _seg_dist(p1, q1, p2, q2):
     return ((p1 + d1 * s) - (p2 + d2 * t)).length
 
 
-def _finger_fk(wrist, rot, spec, tip, flex):
-    """Predicted world joint points [knuckle, prox, mid, tip] of a finger
-    posed by the IK at this wrist pose."""
-    ko = rot @ mathutils.Vector(spec["knuckle"])
-    knuckle = mathutils.Vector(wrist) + ko
-    local = rot.transposed() @ (mathutils.Vector(tip) - knuckle)
-    yaw, prox, mid = _finger_ik(local.x, local.y, -local.z,
-                                spec["lengths"], flex)
+def _finger_fk_from_angles(wrist, rot, spec, yaw, prox, mid, flex):
+    """World joint points [knuckle, prox, mid, tip] of a finger posed at the
+    given joint angles (curl chain prox->mid->distal, sideways yaw)."""
     sy, cy = math.sin(yaw), math.cos(yaw)
-    pts = [knuckle]
+    pts = [mathutils.Vector(wrist) + rot @ mathutils.Vector(spec["knuckle"])]
     p = mathutils.Vector(spec["knuckle"])
     pitch = prox
     for length, dflex in zip(spec["lengths"], (0.0, mid, flex)):
@@ -318,10 +348,22 @@ def _finger_fk(wrist, rot, spec, tip, flex):
     return pts
 
 
+def _finger_fk(wrist, rot, spec, tip, flex):
+    """Predicted world joint points [knuckle, prox, mid, tip] of a finger
+    posed by the IK to reach ``tip`` at this wrist pose."""
+    ko = rot @ mathutils.Vector(spec["knuckle"])
+    knuckle = mathutils.Vector(wrist) + ko
+    local = rot.transposed() @ (mathutils.Vector(tip) - knuckle)
+    yaw, prox, mid = _fret_ik(local.x, local.y, -local.z,
+                              spec["lengths"], flex)
+    return _finger_fk_from_angles(wrist, rot, spec, yaw, prox, mid, flex)
+
+
 def _pose_cost(press, wrist, rot, idle=()):
-    """IK strain plus predicted finger-collision penalty of one pose. ``idle``
-    are the non-pressing fingers, whose default hover is kept clear of the
-    pressing fingers too (a softer penalty than press-press)."""
+    """IK strain, biomechanical-limit penalties, and predicted finger-collision
+    penalty of one pose. ``idle`` are the non-pressing fingers, whose default
+    hover is kept clear of the pressing fingers too (a softer penalty than
+    press-press)."""
     cost = 0.0
     inv = rot.transposed()
     chains = []
@@ -332,7 +374,22 @@ def _pose_cost(press, wrist, rot, idle=()):
                                   n["y"] - (wrist[1] + ko.y),
                                   n["z"] - (wrist[2] + ko.z)))
         local = inv @ delta
-        cost += math.atan2(local.x, max(local.y, 0.012)) ** 2
+        # Gentle strain (prefer little sideways reach) plus the HARD anatomical
+        # caps: a target the finger could only reach by splaying past
+        # FINGER_MCP_SPLAY would cross under/over its neighbours, and one it
+        # could only reach by bending back past FINGER_MCP_HYPEREXT would stretch
+        # unnaturally. Penalizing both here steers the wrist search to a pose
+        # (yaw/roll/slide) where the finger reaches its string within limits.
+        demand = _splay_demand(local.x, local.y)
+        cost += demand * demand
+        over = demand - FINGER_MCP_SPLAY
+        if over > 0.0:
+            cost += SPLAY_W * over * over
+        _, prox, _ = _fret_ik(local.x, local.y, -local.z,
+                              spec["lengths"], DIST_FLEX_PRESS)
+        hyper = -prox - FINGER_MCP_HYPEREXT   # prox < 0 == MCP bending backward
+        if hyper > 0.0:
+            cost += HYPEREXT_W * hyper * hyper
         chains.append(_finger_fk(wrist, rot, spec,
                                  (n["x"], n["y"], n["z"]), DIST_FLEX_PRESS))
     for i in range(len(chains)):
@@ -342,24 +399,6 @@ def _pose_cost(press, wrist, rot, idle=()):
                        for k in range(3) for m in range(3))
             if dmin < TOUCH_CLEAR:
                 cost += COLLIDE_W * (TOUCH_CLEAR - dmin) ** 2
-    # Anti-crossing: no pressing finger should reach across another finger's
-    # knuckle (across the strings) to its target - that is the index sweeping
-    # UNDER the middle to a bass string. Penalize by how far the reach overshoots
-    # any knuckle that sits between the presser's own knuckle and its target.
-    knuckle_x = {}
-    for f in FRET_FINGERS:
-        knuckle_x[f] = wrist[0] + (rot @ mathutils.Vector(
-            FRET_FINGERS[f]["knuckle"])).x
-    for n in press:
-        kf = knuckle_x[n["finger"]]
-        tx = n["x"]
-        lo, hi = (kf, tx) if kf <= tx else (tx, kf)
-        for f in FRET_FINGERS:
-            if f == n["finger"]:
-                continue
-            ox = knuckle_x[f]
-            if lo < ox < hi:
-                cost += CROSS_W * (tx - ox) ** 2
     for f in idle:
         spec = FRET_FINGERS[f]
         ko = rot @ mathutils.Vector(spec["knuckle"])
@@ -547,9 +586,9 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 return local.x, local.y, -local.z
 
             dx, dy, dv = ik_inputs(n["z"])
-            pressed = _finger_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_PRESS)
+            pressed = _fret_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_PRESS)
             dx, dy, dv = ik_inputs(n["z"] + HOVER_LIFT)
-            hover = _finger_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_HOVER)
+            hover = _fret_ik(dx, dy, dv, spec["lengths"], DIST_FLEX_HOVER)
 
             on_frame = to_frame(n["start"])
             off_frame = max(on_frame, to_frame(n["end"]))

@@ -88,6 +88,57 @@ Sources: TalkBass right-hand-technique threads; BassBuzz "Plucking: Index
 vs Middle"; classical-guitar strict i-m alternation (Wikipedia). Slap/pop
 and thumb technique are out of scope.
 
+## Hand-pose realism: joint limits and anti-crossing
+
+The fingering solver decides *which* finger frets *where*; `animate_hands.py`
+then has to pose a real-shaped hand into that grip without the fingers doing
+things a hand cannot do. Two anatomical rules drive that posing.
+
+### Finger joint range of motion
+
+Every finger joint is caged to measured active-ROM norms (`build_hands.py`
+`FINGER_ROT_LIMIT`, applied as Blender `LIMIT_ROTATION` constraints, mirroring
+how `build_bassist` cages the elbow/knee). Per-finger means for index →
+little (Thieme 2024 normative study; AAOS goniometry charts):
+
+| Joint | Flexion | Extension (backward) | Abduction/adduction |
+|---|---|---|---|
+| **MCP** (knuckle) | ~85–90° | ~25–30° (little finger the most, ~26° mean, ~38° at +2 SD) | **~±25°** (only when extended; the collateral ligaments lock it out in flexion) |
+| **PIP** | ~95–110° | ~0° | none |
+| **DIP** | ~80–85° | ~0–10° | none |
+
+The rig's closed-form IK lumps the distal phalanx into the middle link, so the
+`mid` (PIP) bone actually carries the **combined PIP+DIP fold** (~190° total in
+a real hand); that is why its cap is generous (~140°) while `dist` barely moves.
+Everything else sits at the anatomical envelope, and the shipped performance is
+verified to keyframe *inside* the cage on every frame.
+
+### Anti-crossing = the MCP splay limit, not a knuckle-order rule
+
+A finger "crossing under" a neighbour (the index sweeping under the middle/ring
+to reach a bass string in the octave double-stop — `bass_demo.mid` frame 117) is
+at root **one joint exceeding its range**: to reach that far sideways the MCP
+would have to abduct far past its ~25° limit. So the anti-crossing rule is simply
+that limit, enforced in two places: the fret-finger IK hard-caps knuckle yaw at
+`FINGER_MCP_SPLAY` (~26°), and the per-event wrist grid search penalizes any pose
+whose pressing fingers would *demand* more splay (or more MCP hyperextension) than
+that. Reach therefore becomes the **wrist's** job — a small yaw/roll and slide of
+the whole hand — exactly as a real player angles the hand for an octave grip
+rather than swinging one finger under the others. Idle (non-pressing) fingers
+likewise lift *within* the MCP's extension range instead of bowing the knuckle
+backward to clear a presser.
+
+An earlier attempt penalized a presser whose target lay across another finger's
+*knuckle x*; because it ignored that the fingers are spread along the neck (in y)
+and lifted (in z), it fired on the natural bunched-knuckle pose and drove the hand
+into a ~57° over-splayed diagonal — the very artifact it was meant to prevent.
+The joint-limit formulation replaces it.
+
+Sources: [Normal Active ROM of the Index–Little Fingers (Thieme, 2024)](https://www.thieme-connect.com/products/ejournals/pdf/10.1055/s-0044-1788593.pdf);
+[AAOS normal-ROM goniometry chart](https://goniometer.io/range-of-motion);
+[Physiopedia: MCP joint abduction goniometry](https://www.physio-pedia.com/Goniometry:_Finger_Metacarpophalangeal_Joint_Abduction);
+[StatPearls: Metacarpophalangeal joints](https://www.ncbi.nlm.nih.gov/books/NBK538428/).
+
 ## Out of scope (future work)
 
 - Slap/pop, ghost notes, and palm/thumb muting.

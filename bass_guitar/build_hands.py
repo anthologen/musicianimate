@@ -157,14 +157,29 @@ PLUCK_PALM_SIZE = (0.085, 0.070, 0.026)
 # them (its curls are baked keyframes within these bounds).
 #
 # In this rig's finger frame (bone runs +y): X = curl (flexion is NEGATIVE x),
-# Z = knuckle splay/abduction, Y = axial twist. Norms: MCP flexion ~90 / extension
-# ~40; PIP flexion ~110 / ~0 hyperextension; DIP flexion ~80 / ~0. The MCP splay is
-# widened well past the ~25 deg anatomical norm because THIS rig uses knuckle-splay
-# (Z) as the fretting REACH across the wide bass frets, not just spread; the flexion
-# caps are likewise a touch generous so the stylized fret curl is never clamped.
+# Z = knuckle splay/abduction, Y = axial twist. Bounds follow measured active-ROM
+# norms for the index-through-little fingers (Thieme 2024 normative study; AAOS /
+# goniometry references):
+#   * MCP flexion ~85-90, extension (hyperextension) ~25-30 (the little finger the
+#     most, mean ~26 and up toward ~38 at +2SD), abduction/adduction ~+/-25.
+#   * PIP flexion ~95-110, ~0 hyperextension, no splay/twist.
+#   * DIP flexion ~80-85, ~0-10 hyperextension, no splay/twist.
+# The MCP was previously widened to +/-65 splay / +40 extension so the fret hand could
+# REACH across the wide bass frets by knuckle-splay alone -- but that let a pressing
+# finger deviate ~57 deg and sweep UNDER its neighbours (the octave double-stop at
+# frame 117). Reach is now the WRIST's job (animate_hands caps the finger IK splay at
+# FINGER_MCP_SPLAY and the wrist search penalizes any pose that demands more), so the
+# splay comes back to +/-30 (the ~25 deg norm plus a little guard headroom over the
+# 26 deg IK cap) and extension to +35 (the little finger's real backward range, which
+# the pinky uses reaching up to a high octave string). The one joint kept generous is
+# the MID (PIP): this rig's closed-form IK lumps the distal phalanx INTO the middle
+# link (see animate_hands _finger_ik), so f<n>_mid.x carries the COMBINED PIP+DIP fold
+# (~190 deg total in a real hand) while f<n>_dist.x barely moves -- the stylized fret
+# curl drives it to ~140, which is within that combined envelope even though it is past
+# the PIP-alone norm. Clamping it would unseat the press. See animate_hands.
 FINGER_ROT_LIMIT = {
-    "prox": {"x": (-100.0, 40.0), "y": (-8.0, 8.0), "z": (-65.0, 65.0)},  # MCP
-    "mid":  {"x": (-150.0, 5.0),  "y": (-5.0, 5.0), "z": (-6.0, 6.0)},    # PIP: flex only
+    "prox": {"x": (-100.0, 35.0), "y": (-8.0, 8.0), "z": (-30.0, 30.0)},  # MCP
+    "mid":  {"x": (-142.0, 5.0),  "y": (-5.0, 5.0), "z": (-6.0, 6.0)},    # PIP(+lumped DIP): flex only
     "dist": {"x": (-95.0, 10.0),  "y": (-5.0, 5.0), "z": (-6.0, 6.0)},    # DIP: flex only
 }
 
