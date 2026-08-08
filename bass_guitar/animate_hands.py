@@ -158,6 +158,15 @@ COLLIDE_W = 25000.0    # per m^2 of clearance deficit between finger axes
 # the fine clearing on top.
 WRIST_IDLE_CLEAR = 0.015   # idle-vs-press clearance the wrist search aims to open
 IDLE_COLLIDE_W = 9000.0    # weight of the idle-clearance term (< COLLIDE_W)
+# A pressing finger must not reach ACROSS another finger's knuckle to get to its
+# string - that is a finger crossing UNDER a neighbour (the index reaching under
+# the idle middle to the bass string at the octave), which no real hand does. If
+# all four knuckles bunch at the treble edge, a finger pressing a bass string
+# does exactly that; a bit of wrist yaw instead spreads the knuckles diagonally
+# so each finger reaches its string from its own side. Penalize the wrist for any
+# pose where a presser's reach passes another knuckle, strongly enough to prefer
+# the spread.
+CROSS_W = 20000.0          # per m^2 a presser overshoots a crossed knuckle
 
 # --- pluck hand ------------------------------------------------------------
 # The hand is over the strings on the thick (-x) side with fingers reaching
@@ -333,6 +342,24 @@ def _pose_cost(press, wrist, rot, idle=()):
                        for k in range(3) for m in range(3))
             if dmin < TOUCH_CLEAR:
                 cost += COLLIDE_W * (TOUCH_CLEAR - dmin) ** 2
+    # Anti-crossing: no pressing finger should reach across another finger's
+    # knuckle (across the strings) to its target - that is the index sweeping
+    # UNDER the middle to a bass string. Penalize by how far the reach overshoots
+    # any knuckle that sits between the presser's own knuckle and its target.
+    knuckle_x = {}
+    for f in FRET_FINGERS:
+        knuckle_x[f] = wrist[0] + (rot @ mathutils.Vector(
+            FRET_FINGERS[f]["knuckle"])).x
+    for n in press:
+        kf = knuckle_x[n["finger"]]
+        tx = n["x"]
+        lo, hi = (kf, tx) if kf <= tx else (tx, kf)
+        for f in FRET_FINGERS:
+            if f == n["finger"]:
+                continue
+            ox = knuckle_x[f]
+            if lo < ox < hi:
+                cost += CROSS_W * (tx - ox) ** 2
     for f in idle:
         spec = FRET_FINGERS[f]
         ko = rot @ mathutils.Vector(spec["knuckle"])

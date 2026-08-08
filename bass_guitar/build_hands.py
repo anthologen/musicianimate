@@ -141,11 +141,8 @@ PLUCK_FINGERS = {
     "pm": {"knuckle": (0.011, 0.040, 0.0), "lengths": (0.048, 0.031, 0.023)},
 }
 
-# Finger cross-section. Kept just under the ~11 mm centreline clearance the
-# fret-hand collision search can open in the tightest grips (the octave), so
-# adjacent fingers there stop overlapping instead of their boxes kissing.
-FINGER_BOX_W = 0.0095
-FINGER_BOX_H = 0.011
+FINGER_BOX_W = 0.012
+FINGER_BOX_H = 0.013
 # Both palms are the same realistic size so the two hands match; the fret
 # palm just covers the (now realistic) knuckle span rather than a stretched one.
 FRET_PALM_SIZE = (0.086, 0.072, 0.024)
