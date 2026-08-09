@@ -89,6 +89,13 @@ PRESS_STAGGER = 0.014  # fret-slot y spread between fingers sharing a fret
 # holding it as long as it stays LINGER_CLEAR clear of whoever is pressing.
 LINGER_LIFT_FR = 3.0   # frames to ease a released finger up into its relaxed curl
 LINGER_CLEAR = 0.012   # m: min clearance a lingering curl keeps from a presser
+# A lingering finger must also keep the natural neck ORDER: a lower-numbered
+# finger stays nut-ward (higher flat y) of a higher-numbered one. A finger that
+# would linger on the WRONG side of a pressing neighbour (e.g. the middle left
+# behind at fret 2 while the index presses fret 3 - a finger crossing no player
+# makes) is moved out of the way to its ordered idle lane instead. The margin
+# tolerates near-same-fret overlap without tripping on a genuine cross.
+NECK_ORDER_MARGIN = 0.008  # m of along-neck overlap allowed before it reads as a cross
 # A press must not be crammed into the last frame: the descent onto the fret
 # (hover -> press) needs a distance-independent runway so the fingertip eases down
 # instead of slamming (the acceleration spike). When a reaching finger's hover and
@@ -660,6 +667,25 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         idle/holding f must stay clear of)."""
         return [c for g, c in event_press_chains[i].items() if g != f]
 
+    def linger_ok(f, target, rot, angles, i):
+        """Whether finger f may LINGER in its relaxed curl at event i: it must
+        both clear the pressers (3-D) AND keep the natural neck ORDER - a
+        lower-numbered finger stays nut-ward (higher flat y) of a higher one. A
+        finger that would sit on the wrong side of a presser (a crossing) is
+        refused so it relaxes to its ordered idle lane and moves out of the way
+        instead."""
+        if not _angles_clear(f, target, rot, angles, other_press_chains(f, i)):
+            return False
+        ftip = _finger_fk_from_angles(target, _fret_rotation(*rot),
+                                      FRET_FINGERS[f], *angles)[3]
+        for g, ch in event_press_chains[i].items():
+            if g == f:
+                continue
+            d = ftip.y - ch[3].y   # >0: f is nut-ward of g
+            if (f - g) * d > 0.0 and abs(d) > NECK_ORDER_MARGIN:
+                return False       # f on the wrong side of g -> crossing
+        return True
+
     # When the PREVIOUS event's grip releases (its pressing fingers lift): an
     # approaching finger must not reach across the neck until then, or it drifts
     # through a finger still holding the previous grip (index crossing the still-
@@ -721,7 +747,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 # straight) as long as that curl stays clear of whoever is
                 # pressing now; only then straighten out to the neutral idle lane.
                 frame = max(onset, prev_end + 0.5)
-                if linger is not None and _angles_clear(f, target, rot, linger, pcs):
+                if linger is not None and linger_ok(f, target, rot, linger, i):
                     _pose_finger(pbones, f, *linger, frame)
                 else:
                     key_idle(f, target, rot, frame, pcs)
@@ -809,12 +835,11 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 hold_frame = min(max(hover_frame - REACH_LEAD_FR, park_floor),
                                  hover_frame - 0.75)
                 if hold_frame > prev_end + 0.75:
-                    pcs = other_press_chains(f, i)
-                    if linger is not None and _angles_clear(f, target, rot,
-                                                            linger, pcs):
+                    if linger is not None and linger_ok(f, target, rot, linger, i):
                         _pose_finger(pbones, f, *linger, hold_frame)
                     else:
-                        key_idle(f, target, rot, hold_frame, pcs)
+                        key_idle(f, target, rot, hold_frame,
+                                 other_press_chains(f, i))
                     prev_end = hold_frame
 
             # If this same finger presses again very soon, it must lift off THIS
@@ -839,23 +864,51 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 prev_end = pressed_end
                 linger = None   # stays engaged; glides straight to the next press
             else:
-                # RELEASE: hold the note its full length, then lift the fingertip
-                # just off the string into the SAME relaxed curl (its own arched
-                # hover, ~HOVER_LIFT up) - NOT straight to the idle lane. A real
-                # hand rests its fingers curled after a note; snapping them
-                # straight is tiring and reads wrong. The finger then LINGERS in
-                # that curl (idle branch) and only returns to the neutral lane if
-                # the curl would foul a coming press. Because the lift only rises
-                # in place (it does not invade the next fret) it can overlap the
-                # next grip freely, so the note keeps its full sustain.
-                pressed_end = off_frame
-                lift_frame = off_frame + LINGER_LIFT_FR
-                _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                             DIST_FLEX_PRESS, pressed_end)
-                _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                             DIST_FLEX_HOVER, lift_frame)
-                linger = (hover[0], hover[1], hover[2], DIST_FLEX_HOVER)
-                prev_end = lift_frame
+                # RELEASE. A finger left curled at its played fret would CROSS
+                # whoever presses next if that presser lands on the wrong side of
+                # it along the neck (the middle stranded at fret 2 while the index
+                # takes fret 3 - a crossing no player makes). So decide up front:
+                hov_ang = (hover[0], hover[1], hover[2], DIST_FLEX_HOVER)
+                nxt = i + 1 if i + 1 < len(events) else None
+                vacate = (nxt is not None
+                          and not linger_ok(f, targets[nxt], rots[nxt],
+                                            hov_ang, nxt))
+                if not vacate:
+                    # LINGER: hold the note its full length, then lift the
+                    # fingertip just off the string into the SAME relaxed curl
+                    # (its own arched hover, ~HOVER_LIFT up) - NOT straight to the
+                    # idle lane. A real hand rests its fingers curled after a note;
+                    # snapping them straight is tiring and reads wrong. Because the
+                    # lift only rises in place it can overlap the next grip freely,
+                    # so the note keeps its full sustain.
+                    pressed_end = off_frame
+                    lift_frame = off_frame + LINGER_LIFT_FR
+                    _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                                 DIST_FLEX_PRESS, pressed_end)
+                    _pose_finger(pbones, f, hover[0], hover[1], hover[2],
+                                 DIST_FLEX_HOVER, lift_frame)
+                    linger = hov_ang
+                    prev_end = lift_frame
+                else:
+                    # VACATE: get out of the way. Relax to the ordered idle lane,
+                    # arriving before the next onset so the finger has cleared the
+                    # spot the next presser needs (no hanging at the old fret).
+                    relax_frame = off_frame + LINGER_LIFT_FR
+                    nxt_grip = next_onset_after(off_frame)
+                    if nxt_grip is not None:
+                        relax_frame = min(relax_frame, nxt_grip - 1.0)
+                    # Start the lift early enough to ease over the full runway
+                    # (even a little before the notated note-off when the next
+                    # grip lands at once), so vacating doesn't slam.
+                    pressed_end = min(off_frame, relax_frame - LINGER_LIFT_FR)
+                    pressed_end = max(pressed_end, on_frame + 0.5)
+                    relax_frame = max(relax_frame, pressed_end + 1.0)
+                    _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                                 DIST_FLEX_PRESS, pressed_end)
+                    key_idle(f, target, rot, relax_frame,
+                             other_press_chains(f, i))
+                    linger = None
+                    prev_end = relax_frame
             prev_tr = (target, rot)
             last_frame = max(last_frame, off_frame + release_frames)
 
