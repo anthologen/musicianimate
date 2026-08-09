@@ -91,13 +91,16 @@ RELAX_LIFT = 2.5       # frames to lift a finger off a note back to its idle hov
 # reaches across a neighbour nor needs any wrist yaw to make room.
 #
 # The MCP is tilted DOWN at the knuckle (rather than lifted back) so the whole
-# arch points toward the strings: this drops the idle fingertip to ~10 mm above
-# the string plane instead of ~45 mm, so a press glides down a hair instead of
-# dropping from high like a hammer-on. It only tilts the arch as a rigid unit -
-# the PIP/distal curl (the arch SHAPE) is unchanged - so the tip stays in its own
-# lane, sitting right around the attack-hover height (~9 mm) yet still clear of
-# the strings, free to move without accidentally fretting.
-IDLE_PROX = 0.0            # relaxed idle MCP (proximal) angle: aimed at the board
+# arch points toward the strings: with a small positive tilt the idle fingertip
+# rests ~6 mm above the string plane (instead of ~45 mm lifted back, or ~14 mm
+# with the arch merely level), so the hand sits READY over the strings and a
+# press only glides down a hair instead of dropping from high like a hammer-on.
+# The prior 0.0 (arch level) left the fingertips floating ~14 mm up at the start
+# frame near the nut, where no wrist roll tilts them lower; nudging the MCP down
+# parks the average reach among the strings. It only tilts the arch as a rigid
+# unit - the PIP/distal curl (the arch SHAPE) is unchanged - so the tip stays in
+# its own lane, still safely clear of the strings, free to move without fretting.
+IDLE_PROX = 0.10           # relaxed idle MCP (proximal) angle: aimed at the board
 IDLE_MID = 1.26            # relaxed idle PIP (middle) flex - a natural ~72 deg arch
 IDLE_DIST_FLEX = 0.26      # distal curl of an idle finger
 IDLE_CLEAR_TARGET = 0.020  # clearance (m) from a pressing finger that counts as clear
