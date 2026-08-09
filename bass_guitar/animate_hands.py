@@ -162,6 +162,16 @@ WRIST_YAW_REG = 0.5
 NEUTRAL_YAW_Y = 0.45       # flat-frame neck y where the fret wrist sits naturally straight
 NEUTRAL_YAW_SLOPE = 0.65   # rad of neutral yaw per metre the hand reaches off NEUTRAL_YAW_Y
 NEUTRAL_YAW_MAX = 0.28     # cap (rad, ~16 deg) that keeps the rotation "a little"
+# Reaching HIGH on the neck (toward the nut / headstock), a relaxed player lets the
+# wrist hang lower and TRAIL behind the reaching fingers instead of holding it up
+# level with the neck. The worn bass rides with its nut end high (flat +Y points
+# UP in world), so trailing the wrist toward the bridge (flat -Y) drops it downward
+# in world while the finger IK re-extends to keep the fingertips on their frets.
+# Applied only above WRIST_RELAX_Y (the same comfortable middle the yaw neutral
+# uses) and only a little.
+WRIST_RELAX_Y = NEUTRAL_YAW_Y   # start relaxing the wrist down above this neck position
+WRIST_RELAX_DROP = 0.06         # metres the wrist trails (-Y, i.e. down) per metre above it
+WRIST_RELAX_MAX = 0.022         # cap on the trail/drop (m), keeping it slight
 WRIST_ROLL_MAX = 0.42
 WRIST_ROLL_STEP = 0.07
 WRIST_ROLL_REG = 0.3
@@ -308,6 +318,15 @@ def _neutral_yaw(wrist_y):
     NEUTRAL_YAW_* notes). Capped so the hand only rotates a little."""
     ny = -NEUTRAL_YAW_SLOPE * (wrist_y - NEUTRAL_YAW_Y)
     return max(-NEUTRAL_YAW_MAX, min(NEUTRAL_YAW_MAX, ny))
+
+
+def _wrist_relax_drop(wrist_y):
+    """How far to trail the wrist toward the bridge (flat -Y, which is downward in
+    the worn pose) so it hangs lower and more relaxed reaching high on the neck.
+    Zero at/below WRIST_RELAX_Y, growing (capped) toward the nut. See the
+    WRIST_RELAX_* notes."""
+    return min(WRIST_RELAX_MAX,
+               WRIST_RELAX_DROP * max(0.0, wrist_y - WRIST_RELAX_Y))
 
 
 def _solve_wrist(press, rot, knuckle_z):
@@ -470,7 +489,11 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
                                   + (roll - prev_pose[1]) ** 2)
             if best is None or cost < best[0]:
                 best = (cost, wrist, yaw, roll)
-    return best[1], best[2], best[3]
+    wrist = best[1]
+    drop = _wrist_relax_drop(wrist[1])
+    if drop:
+        wrist = (wrist[0], wrist[1] - drop, wrist[2])
+    return wrist, best[2], best[3]
 
 
 def animate_fret_hand(arm_obj, notes, fps, frame_start,
