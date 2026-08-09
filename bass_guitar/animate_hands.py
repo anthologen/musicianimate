@@ -145,6 +145,23 @@ def _idle_finger_pose(f, target, rot, press_chains=()):
 WRIST_YAW_MAX = 0.56
 WRIST_YAW_STEP = 0.08
 WRIST_YAW_REG = 0.5
+# The fretting forearm reaches the neck from a roughly fixed elbow by the body, so
+# a hand held STRICTLY perpendicular to the neck has to bend the wrist ever more
+# sharply toward either end of the fretboard: measured against the actual mounted
+# arm, the wrist sits ~58 deg off the forearm at a comfortable middle position
+# (~fret 8) but climbs past 80-90 deg reaching the nut, and back up toward the top
+# frets. A real player relieves that by letting the whole hand ROTATE to follow the
+# forearm, trading wrist deviation for a little yaw. So the wrist search relaxes
+# toward a neck-position-dependent NEUTRAL yaw instead of toward a fixed square-on
+# zero: ~0 near NEUTRAL_YAW_Y (where the wrist is naturally straight), yawing
+# NEGATIVE reaching toward the nut (higher flat-frame y) and POSITIVE reaching
+# toward the high frets. It follows only a FRACTION of the full forearm angle (the
+# bend-minimizing yaw wants >=0.5 rad at the extremes) and is capped, so the hand
+# still reads as roughly square to the neck -- just no longer robotically so, and it
+# stops bending the wrist hardest exactly where the reach is already longest.
+NEUTRAL_YAW_Y = 0.45       # flat-frame neck y where the fret wrist sits naturally straight
+NEUTRAL_YAW_SLOPE = 0.65   # rad of neutral yaw per metre the hand reaches off NEUTRAL_YAW_Y
+NEUTRAL_YAW_MAX = 0.28     # cap (rad, ~16 deg) that keeps the rotation "a little"
 WRIST_ROLL_MAX = 0.42
 WRIST_ROLL_STEP = 0.07
 WRIST_ROLL_REG = 0.3
@@ -284,6 +301,15 @@ def _fret_rotation(yaw, roll):
             @ mathutils.Matrix.Rotation(HAND_ROT_Z, 3, 'Z'))
 
 
+def _neutral_yaw(wrist_y):
+    """The wrist yaw the search relaxes toward at this neck position: zero at
+    NEUTRAL_YAW_Y and tilting to follow the forearm as the hand reaches toward
+    either end of the neck, so the wrist deviates less sharply there (see the
+    NEUTRAL_YAW_* notes). Capped so the hand only rotates a little."""
+    ny = -NEUTRAL_YAW_SLOPE * (wrist_y - NEUTRAL_YAW_Y)
+    return max(-NEUTRAL_YAW_MAX, min(NEUTRAL_YAW_MAX, ny))
+
+
 def _solve_wrist(press, rot, knuckle_z):
     """Wrist location placing each pressing knuckle REACH_FRAC of its
     finger length back along the rotated rest direction from its fingertip
@@ -418,6 +444,11 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
     pressed_fingers = {n["finger"] for n in press}
     idle = [f for f in FRET_FINGERS if f not in pressed_fingers]
 
+    # Relax the wrist yaw toward the forearm-following neutral for this neck
+    # position (not a fixed square-on zero), read from the base-pose wrist y so it
+    # doesn't feed back on the yaw being searched.
+    ny = _neutral_yaw(_solve_wrist(press, _fret_rotation(0, 0), KNUCKLE_Z)[1])
+
     cohere = 0.0
     if prev_pose is not None and dt is not None:
         cohere = WRIST_COHERE * max(0.0, 1.0 - dt / 1.5)
@@ -431,7 +462,7 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
             yaw = yi * WRIST_YAW_STEP
             rot = _fret_rotation(yaw, roll)
             wrist = _solve_wrist(press, rot, KNUCKLE_Z)
-            cost = (WRIST_YAW_REG * yaw * yaw
+            cost = (WRIST_YAW_REG * (yaw - ny) ** 2
                     + WRIST_ROLL_REG * roll * roll
                     + _pose_cost(press, wrist, rot, idle))
             if cohere:
