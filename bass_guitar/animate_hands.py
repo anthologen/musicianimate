@@ -170,8 +170,8 @@ NEUTRAL_YAW_MAX = 0.28     # cap (rad, ~16 deg) that keeps the rotation "a littl
 # Applied only above WRIST_RELAX_Y (the same comfortable middle the yaw neutral
 # uses) and only a little.
 WRIST_RELAX_Y = NEUTRAL_YAW_Y   # start relaxing the wrist down above this neck position
-WRIST_RELAX_DROP = 0.06         # metres the wrist trails (-Y, i.e. down) per metre above it
-WRIST_RELAX_MAX = 0.022         # cap on the trail/drop (m), keeping it slight
+WRIST_RELAX_DROP = 0.09         # metres the wrist trails (-Y, i.e. down) per metre above it
+WRIST_RELAX_MAX = 0.034         # cap on the trail/drop (m), keeping it slight
 WRIST_ROLL_MAX = 0.42
 WRIST_ROLL_STEP = 0.07
 WRIST_ROLL_REG = 0.3
