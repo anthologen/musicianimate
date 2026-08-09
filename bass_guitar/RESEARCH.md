@@ -134,6 +134,32 @@ and lifted (in z), it fired on the natural bunched-knuckle pose and drove the ha
 into a ~57° over-splayed diagonal — the very artifact it was meant to prevent.
 The joint-limit formulation replaces it.
 
+### Relaxing the wrist low on the neck along the *reach axis*, not flat −Y
+
+Reaching high on the neck (the wide low frets near the nut) a relaxed player lets
+the wrist hang lower and trail behind the reaching fingers (`_wrist_relax_drop`).
+Trailing it along the flat neck axis (−Y), though, moves each knuckle *sideways*
+of its target in the wrap-tilted finger frame, which the closed-form IK reads as a
+large MCP abduction — the lone pressing finger then pins to the ±26° splay cap and
+jams into its idle neighbour (the "strange abduction" the low frets showed on every
+single-finger press). Trailing it instead along the **finger reach axis**
+(`−rest_dir`) is pure finger *extension* — exactly the "re-extend to keep the
+fingertips on their frets" the relaxation is meant to be — so the finger stays
+perpendicular with only a few degrees of splay while the wrist still drops and
+backs off. A multi-finger grip (a double-stop) keeps the flat-Y trail, whose slide
+happens to separate its two fingers; bass is near-monophonic, so that branch is rare.
+
+### Sympathetic idle motion — neighbours drift aside, they don't get run through
+
+When a finger *does* have to abduct (a double-stop, or a fast reach), a real hand's
+neighbouring fingers drift the same way rather than holding still while one finger
+swings across them. So an idle finger crowded by a presser searches a small grid of
+sympathetic knuckle **leans** (`_IDLE_YAW_GRID`, up to `IDLE_SYMPATHY_MAX` ≈ 16°)
+*and* PIP **curls** (`_IDLE_MID_GRID`) and takes the pose that clears the presser
+closest to its relaxed neutral — leaning is cheaper than a hard clench, so it mostly
+slides aside and only curls when a lean alone can't open the gap. This is what keeps
+the octave/double-stop grips clear where the presser is pinned at the splay cap.
+
 Sources: [Normal Active ROM of the Index–Little Fingers (Thieme, 2024)](https://www.thieme-connect.com/products/ejournals/pdf/10.1055/s-0044-1788593.pdf);
 [AAOS normal-ROM goniometry chart](https://goniometer.io/range-of-motion);
 [Physiopedia: MCP joint abduction goniometry](https://www.physio-pedia.com/Goniometry:_Finger_Metacarpophalangeal_Joint_Abduction);

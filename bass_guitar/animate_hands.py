@@ -104,11 +104,21 @@ IDLE_PROX = 0.10           # relaxed idle MCP (proximal) angle: aimed at the boa
 IDLE_MID = 1.26            # relaxed idle PIP (middle) flex - a natural ~72 deg arch
 IDLE_DIST_FLEX = 0.26      # distal curl of an idle finger
 IDLE_CLEAR_TARGET = 0.020  # clearance (m) from a pressing finger that counts as clear
-# When a neighbour presses close by, the idle finger CURLS BACK - tightening the
-# PIP to draw the fingertip toward the palm WITHIN its own lane - just enough to
-# clear it, rather than reaching away or bending the wrist. Among poses that
-# clear, the loosest (least-curled) arch wins.
+# When a neighbour presses close by, the idle finger gets out of the way two ways,
+# and the search below picks the cheapest mix that clears the presser:
+#  - it LEANS ASIDE at the knuckle (a small sympathetic MCP yaw), the way a real
+#    hand's fingers drift together when one abducts rather than one finger swinging
+#    across a still neighbour, and
+#  - it CURLS BACK - tightening the PIP to draw the fingertip toward the palm
+#    within its own lane.
+# Among poses that clear, the one closest to the relaxed neutral (no yaw, loosest
+# arch) wins; leaning is cheaper than a hard curl, so a crowded finger mostly
+# slides aside and only clenches if leaning alone can't open the gap.
 _IDLE_MID_GRID = (IDLE_MID, 1.6, 1.9, 2.2, 2.5)
+IDLE_SYMPATHY_MAX = math.radians(16.0)  # farthest an idle finger leans out of the way
+_IDLE_YAW_GRID = tuple(i * IDLE_SYMPATHY_MAX / 3.0 for i in range(-3, 4))
+IDLE_YAW_COST = 0.030     # score penalty per rad of sympathetic lean
+IDLE_CURL_COST = 0.012    # score penalty per rad of extra PIP curl
 
 
 def _idle_finger_pose(f, target, rot, press_chains=()):
@@ -116,27 +126,31 @@ def _idle_finger_pose(f, target, rot, press_chains=()):
 
     Holds IDLE_PROX/IDLE_MID (a loose ~72 deg arch, no sideways yaw) by default.
     When ``press_chains`` (the world joint chains of the fingers pressing this
-    event) come within IDLE_CLEAR_TARGET, the PIP curls back from _IDLE_MID_GRID
-    just enough to clear them - drawing the fingertip toward the palm within its
-    own lane, the real motion, rather than reaching away or bending the wrist.
-    Among poses that clear, the loosest arch wins."""
+    event) come within IDLE_CLEAR_TARGET, the finger searches a small grid of
+    sympathetic knuckle LEANS (_IDLE_YAW_GRID) and PIP CURLS (_IDLE_MID_GRID) and
+    takes the pose that clears the presser closest to the relaxed neutral - so it
+    drifts aside (and curls a little) instead of a neighbour swinging across it.
+    Among poses that clear, the least-deviating one wins."""
     rmat = _fret_rotation(*rot)
     spec = FRET_FINGERS[f]
+    if not press_chains:
+        return 0.0, IDLE_PROX, IDLE_MID
     best = None
-    for mid in _IDLE_MID_GRID:
-        if press_chains:
-            chain = _finger_fk_from_angles(target, rmat, spec, 0.0, IDLE_PROX,
+    for yaw in _IDLE_YAW_GRID:
+        for mid in _IDLE_MID_GRID:
+            chain = _finger_fk_from_angles(target, rmat, spec, yaw, IDLE_PROX,
                                            mid, IDLE_DIST_FLEX)
             clr = min(_seg_dist(chain[k], chain[k + 1], pc[m], pc[m + 1])
                       for pc in press_chains
                       for k in range(3) for m in range(3))
-        else:
-            clr = IDLE_CLEAR_TARGET
-        # Clear the presser up to the target; once clear, keep the loosest arch.
-        score = min(clr, IDLE_CLEAR_TARGET) - 0.012 * (mid - IDLE_MID)
-        if best is None or score > best[0]:
-            best = (score, mid)
-    return 0.0, IDLE_PROX, best[1]
+            # Clear the presser up to the target; once clear, sit as close to the
+            # relaxed neutral (no lean, loosest arch) as possible.
+            score = (min(clr, IDLE_CLEAR_TARGET)
+                     - IDLE_YAW_COST * abs(yaw)
+                     - IDLE_CURL_COST * (mid - IDLE_MID))
+            if best is None or score > best[0]:
+                best = (score, yaw, mid)
+    return best[1], IDLE_PROX, best[2]
 
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
@@ -164,9 +178,10 @@ NEUTRAL_YAW_SLOPE = 0.65   # rad of neutral yaw per metre the hand reaches off N
 NEUTRAL_YAW_MAX = 0.28     # cap (rad, ~16 deg) that keeps the rotation "a little"
 # Reaching HIGH on the neck (toward the nut / headstock), a relaxed player lets the
 # wrist hang lower and TRAIL behind the reaching fingers instead of holding it up
-# level with the neck. The worn bass rides with its nut end high (flat +Y points
-# UP in world), so trailing the wrist toward the bridge (flat -Y) drops it downward
-# in world while the finger IK re-extends to keep the fingertips on their frets.
+# level with the neck. The trail is applied along the finger REACH AXIS (see
+# _fret_event_pose), so it re-extends the fingers to keep the fingertips on their
+# frets while the wrist drops and backs off -- rather than a flat-Y slide, which
+# would deviate the knuckle sideways of its target and force a spurious MCP splay.
 # Applied only above WRIST_RELAX_Y (the same comfortable middle the yaw neutral
 # uses) and only a little.
 WRIST_RELAX_Y = NEUTRAL_YAW_Y   # start relaxing the wrist down above this neck position
@@ -321,10 +336,10 @@ def _neutral_yaw(wrist_y):
 
 
 def _wrist_relax_drop(wrist_y):
-    """How far to trail the wrist toward the bridge (flat -Y, which is downward in
-    the worn pose) so it hangs lower and more relaxed reaching high on the neck.
-    Zero at/below WRIST_RELAX_Y, growing (capped) toward the nut. See the
-    WRIST_RELAX_* notes."""
+    """How far to trail the wrist back along the finger reach axis so it hangs
+    lower and more relaxed reaching high on the neck (the direction is applied in
+    _fret_event_pose). Zero at/below WRIST_RELAX_Y, growing (capped) toward the
+    nut. See the WRIST_RELAX_* notes."""
     return min(WRIST_RELAX_MAX,
                WRIST_RELAX_DROP * max(0.0, wrist_y - WRIST_RELAX_Y))
 
@@ -491,7 +506,26 @@ def _fret_event_pose(event, prev_pose=None, dt=None):
                 best = (cost, wrist, yaw, roll)
     wrist = best[1]
     drop = _wrist_relax_drop(wrist[1])
-    if drop:
+    if drop and len(press) == 1:
+        # SINGLE-finger grip: trail the wrist back along the finger REACH AXIS
+        # (-rest_dir), not flat -Y. A raw flat-Y slide moves the knuckle sideways
+        # of its target in the wrap-tilted finger frame, which the IK reads as a
+        # large MCP splay (the lone pressing finger then hits the anatomical cap
+        # and jams into its idle neighbour - the "strange abduction" near the nut).
+        # Backing off along the reach axis instead is pure finger EXTENSION -
+        # exactly the "re-extend to keep the fingertips on their frets" the relax
+        # is meant to be - so the finger stays perpendicular while the wrist still
+        # hangs lower and trails the reach.
+        rest = _fret_rotation(best[2], best[3]) @ mathutils.Vector((0.0, 1.0, 0.0))
+        wrist = (wrist[0] - drop * rest.x,
+                 wrist[1] - drop * rest.y,
+                 wrist[2] - drop * rest.z)
+    elif drop:
+        # Multi-finger grip (a double-stop): keep the flat-Y trail. Its two
+        # fingers sit at different frets and reach apart; the flat-Y slide happens
+        # to separate them (it extends them toward the nut), which the reach-axis
+        # trail would not, so the tight double-stop stays clear. Bass is
+        # near-monophonic, so this branch is rare.
         wrist = (wrist[0], wrist[1] - drop, wrist[2])
     return wrist, best[2], best[3]
 
