@@ -141,8 +141,46 @@ PLUCK_FINGERS = {
     "pm": {"knuckle": (0.011, 0.040, 0.0), "lengths": (0.048, 0.031, 0.023)},
 }
 
-FINGER_BOX_W = 0.012
-FINGER_BOX_H = 0.013
+# --- Finger cross-section (metres), from hand anthropometry ------------------
+# Each phalanx box approximates an average adult finger: broadest at the
+# proximal phalanx and TAPERING to the tip, with the little finger the
+# slimmest and the index/middle the widest. Breadths (side-to-side) follow
+# measured digit-breadth norms -- ~18 mm proximal for the index/middle down
+# to ~15 mm for the little finger, tapering to ~11-14 mm at the fingertip
+# (Garrett 1971 hand anthropometry; ANSUR). Depth (dorsopalmar) runs ~1 mm
+# under the breadth, a finger being a touch wider than it is thick. This
+# replaced a flat 12x13 mm box on every phalanx, which -- being far thinner
+# than a real finger -- left oversized gaps between the fingers.
+#
+# The gaps are ALSO bounded by the fret-hand knuckle PITCH (FRET_FINGERS
+# knuckle x: ~24-26 mm centre-to-centre, a large-hand span chosen so the
+# fingers cover the wide bass frets). That pitch is baked into the animation
+# and so is left as-is; realistic finger widths shrink the gaps to a natural
+# few millimetres rather than closing them entirely. The thumb keeps its own
+# (larger) width where it is built, so it stays the thickest digit.
+#                    (width, height) for prox / mid / dist phalanx
+FINGER_CROSS = {
+    "index":  {"prox": (0.018, 0.017), "mid": (0.016, 0.015), "dist": (0.014, 0.013)},
+    "middle": {"prox": (0.018, 0.017), "mid": (0.016, 0.015), "dist": (0.014, 0.013)},
+    "ring":   {"prox": (0.017, 0.016), "mid": (0.015, 0.014), "dist": (0.013, 0.012)},
+    "pinky":  {"prox": (0.015, 0.014), "mid": (0.013, 0.012), "dist": (0.011, 0.011)},
+}
+
+# Which anthropometric profile each finger key -- across the fret (1..4),
+# pluck (pi/pm) and pick-fist (index..pinky) rigs -- draws its section from.
+FINGER_PROFILE = {
+    1: "index", 2: "middle", 3: "ring", 4: "pinky",   # fret fingers
+    "pi": "index", "pm": "middle",                     # pluck fingers
+    "index": "index", "middle": "middle",              # pick fist
+    "ring": "ring", "pinky": "pinky",
+}
+
+
+def _finger_cross(key, seg):
+    """(width, height) of finger `key`'s `seg` phalanx box, from anthropometry."""
+    return FINGER_CROSS[FINGER_PROFILE[key]][seg]
+
+
 # Both palms are the same realistic size so the two hands match; the fret
 # palm just covers the (now realistic) knuckle span rather than a stretched one.
 FRET_PALM_SIZE = (0.086, 0.072, 0.024)
@@ -315,8 +353,9 @@ def _build_finger_chains(arm_obj, fingers):
 def _add_finger_boxes(arm_obj, coll, mat, fingers):
     for name, spec in fingers.items():
         for seg, length in zip(("prox", "mid", "dist"), spec["lengths"]):
+            w, h = _finger_cross(name, seg)
             _bone_box(arm_obj, coll, mat, f"f{name}_{seg}",
-                      (FINGER_BOX_W, length * 0.92, FINGER_BOX_H),
+                      (w, length * 0.92, h),
                       (0.0, -length / 2.0, 0.0))
 
 
@@ -382,13 +421,15 @@ def build_pluck_hand(coll, mat):
     # proximal flexes DOWN from the knuckle, the middle curls under, and
     # the tip tucks gently back up toward the palm, staying above the
     # strings. Laid out as world offsets (knuckle K -> P -> M -> tip T).
-    for K, P, M, T in (
-            ((0.037, -0.032, -0.015), (0.062, -0.032, -0.049),
-             (0.040, -0.032, -0.060), (0.022, -0.032, -0.052)),   # ring
-            ((0.037, -0.052, -0.016), (0.060, -0.052, -0.048),
-             (0.040, -0.052, -0.058), (0.024, -0.052, -0.050))):  # pinky
-        for wa, wb in ((K, P), (P, M), (M, T)):
-            _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H,
+    for profile, (K, P, M, T) in (
+            ("ring", ((0.037, -0.032, -0.015), (0.062, -0.032, -0.049),
+                      (0.040, -0.032, -0.060), (0.022, -0.032, -0.052))),
+            ("pinky", ((0.037, -0.052, -0.016), (0.060, -0.052, -0.048),
+                       (0.040, -0.052, -0.058), (0.024, -0.052, -0.050)))):
+        for seg, (wa, wb) in zip(("prox", "mid", "dist"),
+                                 ((K, P), (P, M), (M, T))):
+            w, h = _finger_cross(profile, seg)
+            _seg_box(arm_obj, coll, mat, w, h,
                      pluck_local_offset(wa), pluck_local_offset(wb))
 
     # Thumb: floating-thumb anchor resting on the pickup near the low-E
@@ -532,11 +573,12 @@ def build_pick_hand(coll, mat):
     # Finger chains as static boxes (RIGHT hand: thumb/index on the -x side,
     # pinky on +x). Full three-phalanx fingers (matching the fretting hand)
     # curled into a relaxed fist around the pick -- see PICK_FIST.
-    for knuckle, lengths, flex in PICK_FIST.values():
+    for name, (knuckle, lengths, flex) in PICK_FIST.items():
         pts = _curled_finger(knuckle, lengths, flex)
-        for a, b in zip(pts[:-1], pts[1:]):
-            _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H,
-                     tuple(a), tuple(b))
+        for seg, (a, b) in zip(("prox", "mid", "dist"),
+                               zip(pts[:-1], pts[1:])):
+            w, h = _finger_cross(name, seg)
+            _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
     # Thumb lies along the thumb (-x) edge, its pad pressing down on the pick
     # so the pick is pinched between the thumb and the index's side.
