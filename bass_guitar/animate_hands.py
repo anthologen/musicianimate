@@ -85,10 +85,20 @@ RELAX_LIFT = 2.5       # frames to lift a finger off a note back to its idle hov
 # strings at its own fret - so it stays clear of the pressing fingers at other
 # frets and glides with the hand between events, without the tight clench that
 # fully retracting to the treble edge would need.
-IDLE_HOVER = 0.013      # idle fingertip height above the strings (default reach)
-IDLE_FORWARD = 0.010    # idle reach toward the nut from the knuckle (gentle angle)
+#
+# The reach must also stay OUT AT ARM'S LENGTH along the finger, or the IK folds
+# it into a fist: a ~90 mm finger told to touch a point only ~35 mm from its own
+# knuckle (a small forward + across + down-to-the-strings hop) can only get there
+# by clenching the PIP to ~130 deg - a tense claw, not a hover. IDLE_FORWARD is
+# what buys the length back: reaching well toward the nut extends the finger down
+# the neck at a shallow angle, so it drapes over the strings in a relaxed ~80 deg
+# arch (fingertip past the knuckle, not curled back under the palm) while still
+# hovering just above its own lane.
+IDLE_HOVER = 0.022      # idle fingertip height above the strings (default reach)
+IDLE_FORWARD = 0.058    # idle reach toward the nut from the knuckle: keeps the
+                        # finger EXTENDED into a relaxed arch instead of clenched
 IDLE_ACROSS = 0.032     # idle reach ACROSS toward the strings from the treble edge
-IDLE_DIST_FLEX = 0.30   # distal curl of an idle finger
+IDLE_DIST_FLEX = 0.26   # distal curl of an idle finger
 
 # An idle finger's default hover (over the strings at its own fret) still runs
 # alongside a neighbour that is pressing when the presser's arched finger bulges
@@ -100,7 +110,7 @@ IDLE_DIST_FLEX = 0.30   # distal curl of an idle finger
 # hovers over lets it clear the presser's arch.
 IDLE_CLEAR_TARGET = 0.020   # clearance (m) from a pressing finger that counts as clear
 _IDLE_ACROSS_GRID = (0.004, 0.014, 0.024, 0.032, 0.042, 0.052)
-_IDLE_LIFT_GRID = (0.013, 0.030, 0.050, 0.075, 0.105, 0.135)
+_IDLE_LIFT_GRID = (0.022, 0.030, 0.050, 0.075, 0.105, 0.135)
 
 
 def _idle_finger_pose(f, target, rot, press_chains=()):
