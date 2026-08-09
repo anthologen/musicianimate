@@ -67,11 +67,30 @@ KNUCKLE_Z = 0.058      # knuckle-line height while fretting (arch clearance)
 HOVER_LIFT = 0.012     # fingertip height above the string while not pressing
 ARRIVE_LEAD = 0.15     # seconds the wrist arrives before a press
 MIN_TRAVEL = 0.12      # seconds of glide the wrist gets between events
+# A big neck position shift is spread over the WHOLE rest before it, not lunged
+# in the last few frames with the hand then sitting parked. The larger the shift,
+# the later the wrist is allowed to arrive (down to MIN_ARRIVE_LEAD) and the
+# smaller its "arrive at least 60% through the gap" floor, so the long glide up
+# the neck uses every frame the previous note's release leaves it - the way a
+# player eases into a shift in anticipation instead of snapping.
+MIN_ARRIVE_LEAD = 0.06   # s: least lead before a press, even for a big shift
+SHIFT_SPREAD_MIN = 0.04  # m: shifts below this aren't spread (a normal reach)
+SHIFT_SPREAD_FULL = 0.12  # m: shifts this large get the full spread
+SHIFT_FLOOR_FRAC = 0.12  # the gap-fraction floor on arrival for a full shift
 REACH_FRAC = 0.50      # fraction of finger length the knuckle sits back
 DIST_FLEX_PRESS = 0.45
 DIST_FLEX_HOVER = 0.30
 PRESS_STAGGER = 0.014  # fret-slot y spread between fingers sharing a fret
 RELAX_LIFT = 2.5       # frames to lift a finger off a note back to its idle hover
+# Anticipation: a real fretting hand does not hold a finger still until the last
+# instant and then snap it onto the next note - it starts repositioning the
+# finger (and wrist) in advance and eases it into place. These give every finger
+# transition a distance-independent minimum runway so the pose change spreads
+# over several eased frames instead of one, killing the acceleration spikes.
+SETTLE_FR = 1.0        # frames a finger holds the hover just before it presses
+REACH_LEAD_FR = 4.0    # frames a finger glides from its idle lane into the hover
+CROSS_GLIDE_FR = 4.0   # frames a finger takes crossing straight from one press
+                       # to the next (it lifts off the old fret this early)
 
 # An idle (non-pressing) fret finger holds a RELAXED ARCH in its own fret lane,
 # NOT a reach to a hover point. The knuckles ride the treble edge spread ALONG
@@ -563,10 +582,22 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
         arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
     prev_t = None
+    prev_target = None
     for i, (ev, target, rot) in enumerate(zip(events, targets, rots)):
-        arrive = ev["t"] - ARRIVE_LEAD
+        # Spread a big neck shift across the whole preceding rest: the farther the
+        # hand travels, the later it may arrive (nearer the press) and the weaker
+        # its 60%-through-the-gap floor, so the glide isn't crammed into the last
+        # few frames. Small reaches keep the original snappy-but-safe lead.
+        lead, floor_frac = ARRIVE_LEAD, 0.6
+        if prev_target is not None:
+            move = math.dist(prev_target, target)
+            s = max(0.0, min(1.0, (move - SHIFT_SPREAD_MIN) /
+                             (SHIFT_SPREAD_FULL - SHIFT_SPREAD_MIN)))
+            lead = ARRIVE_LEAD + s * (MIN_ARRIVE_LEAD - ARRIVE_LEAD)
+            floor_frac = 0.6 + s * (SHIFT_FLOOR_FRAC - 0.6)
+        arrive = ev["t"] - lead
         if prev_t is not None:
-            arrive = max(arrive, prev_t + 0.6 * (ev["t"] - prev_t))
+            arrive = max(arrive, prev_t + floor_frac * (ev["t"] - prev_t))
         arrive = max(arrive, 0.0)
         key_root(arrive, target, rot)
         end = max(n["end"] for n in ev["notes"] if n["fret"] > 0)
@@ -579,6 +610,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
             prev_t = depart
         else:
             prev_t = arrive
+        prev_target = target
 
     # Which finger presses which note on each event (idle otherwise), plus the
     # predicted world joint chain of each pressing finger, so idle fingers can be
@@ -601,11 +633,16 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     # When the PREVIOUS event's grip releases (its pressing fingers lift): an
     # approaching finger must not reach across the neck until then, or it drifts
     # through a finger still holding the previous grip (index crossing the still-
-    # pressing middle at ~106). frame_start for the first event.
-    prev_release = [frame_start]
-    for i in range(1, len(events)):
-        ends = [to_frame(nn["end"]) for nn in event_press[i - 1].values()]
-        prev_release.append(max(ends) if ends else frame_start)
+    # pressing middle at ~106). The finger f itself is EXCLUDED: a finger never
+    # collides with its own just-vacated fret, so a finger re-fretting soon is
+    # free to lift off and glide straight across (see CROSS_GLIDE_FR) rather than
+    # being pinned by its own note-off. frame_start for the first event.
+    def prev_release_for(f, i):
+        if i == 0:
+            return frame_start
+        ends = [to_frame(nn["end"]) for g, nn in event_press[i - 1].items()
+                if g != f]
+        return max(ends) if ends else frame_start
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
@@ -640,7 +677,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 # idle ring over the pressing index through the octave). Only when
                 # the previous grip sustains well past this event's arrival, so a
                 # tight reach-in transition is left to glide.
-                hold_prev = prev_release[i] - 0.5
+                hold_prev = prev_release_for(f, i) - 0.5
                 if (prev_tr is not None
                         and prev_end + 0.75 < hold_prev < onset - 3.0):
                     key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
@@ -673,60 +710,100 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
 
             on_frame = to_frame(n["start"])
             off_frame = max(on_frame, to_frame(n["end"]))
-            hover_frame = max(frame_start, on_frame - attack_frames(n))
-            hover_frame = max(hover_frame, prev_end + 0.5)
-            # Don't reach across the neck until the previous grip has released,
-            # so an approaching finger doesn't drift through a finger still
-            # pressing it (index vs the still-down middle at ~106). Keep at least
-            # a short reach-in window so the press still eases on.
-            hover_frame = max(hover_frame, prev_release[i])
-            hover_frame = min(hover_frame, on_frame - 0.75, on_frame)
-            hover_frame = max(hover_frame, prev_end + 0.5)
-            # Hold the finger's PREVIOUS idle pose (in the previous event's hand
-            # frame) until that grip releases, so an idle finger doesn't drift
-            # toward this press during the previous event's sustain - the middle
-            # creeping bass-ward over the pressing index all through the octave
-            # before its own fret-10 press.
-            hold_prev = prev_release[i] - 0.5
-            if prev_tr is not None and prev_end + 0.75 < hold_prev < hover_frame - 0.5:
-                key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
-                         other_press_chains(f, i - 1))
-                prev_end = hold_prev
-            # Hold the idle-hover lane (in THIS event's hand frame, where the
-            # hand has arrived) right up to the reach-in, so the finger glides in
-            # its own lane through the hand's move instead of drifting across.
-            hold_frame = hover_frame - 0.75
-            if hold_frame > prev_end + 0.75:
-                key_idle(f, target, rot, hold_frame, other_press_chains(f, i))
+            pr = prev_release_for(f, i)
+            was_pressing = i > 0 and f in event_press[i - 1]
 
-            # Lift back to the idle hover promptly after the note (never
-            # lingering in the pressed pose while the next grip forms), and be
-            # clear a frame before the next grip's onset.
-            relax_frame = off_frame + RELAX_LIFT
-            nxt_grip = next_onset_after(off_frame)
-            if nxt_grip is not None:
-                relax_frame = min(relax_frame, nxt_grip - 1.0)
-            # Begin the lift early enough to finish in time - even a hair before
-            # the notated note end when the next grip lands almost immediately.
-            pressed_end = min(off_frame, relax_frame - RELAX_LIFT)
-            pressed_end = max(pressed_end, on_frame + 0.5)
-            relax_frame = max(relax_frame, pressed_end + 1.0)
+            if was_pressing:
+                # CROSS: this finger just pressed the previous event and now
+                # re-frets. It already lifted off the old fret early (that press's
+                # pressed_end, pulled back by CROSS_GLIDE_FR below), so it is
+                # already gliding across - place the hover LATE (a small settle
+                # before the press) and let that long eased glide, not a
+                # last-instant snap, carry the fingertip to the new fret. No
+                # idle-lane detour: going press -> lane -> press would yank it
+                # back and forth (the fret-2 string-1 -> string-3 jump at ~96).
+                hover_frame = on_frame - SETTLE_FR
+                hover_frame = max(hover_frame, prev_end + 0.5, pr)
+                hover_frame = min(hover_frame, on_frame - 0.5)
+                hover_frame = max(hover_frame, prev_end + 0.5)
+            else:
+                # REACH: coming from the idle lane. Hover early, then hold the
+                # finger in its own lane until REACH_LEAD_FR frames before the
+                # hover, so it drifts to the fret over several eased frames
+                # instead of the old ~0.75-frame snap.
+                hover_frame = max(frame_start, on_frame - attack_frames(n))
+                hover_frame = max(hover_frame, prev_end + 0.5, pr)
+                hover_frame = min(hover_frame, on_frame - SETTLE_FR, on_frame)
+                hover_frame = max(hover_frame, prev_end + 0.5)
+                # Hold the finger's PREVIOUS idle pose (in the previous event's
+                # hand frame) until that grip releases, so an idle finger doesn't
+                # drift toward this press during the previous event's sustain.
+                hold_prev = pr - 0.5
+                if (prev_tr is not None
+                        and prev_end + 0.75 < hold_prev < hover_frame - 0.5):
+                    key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
+                             other_press_chains(f, i - 1))
+                    prev_end = hold_prev
+                # Start the eased reach REACH_LEAD_FR frames before the hover,
+                # but never before the previous grip releases (so the finger
+                # doesn't cross a still-pressing neighbour).
+                hold_frame = max(hover_frame - REACH_LEAD_FR, pr)
+                if hold_frame > prev_end + 0.75:
+                    key_idle(f, target, rot, hold_frame, other_press_chains(f, i))
+                    prev_end = hold_frame
+
+            # If this same finger presses again very soon, it must lift off THIS
+            # fret early to glide across in time (anticipation), and it should
+            # NOT relax to the idle lane in between - the next event's late hover
+            # is its next key, so it glides straight from one press to the next.
+            presses_next_soon = (
+                i + 1 < len(events) and f in event_press[i + 1]
+                and to_frame(events[i + 1]["t"]) - off_frame < CROSS_GLIDE_FR)
 
             _pose_finger(pbones, f, hover[0], hover[1], hover[2],
                          DIST_FLEX_HOVER, hover_frame)
             _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
                          DIST_FLEX_PRESS, on_frame)
-            _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                         DIST_FLEX_PRESS, pressed_end)
-            key_idle(f, target, rot, relax_frame, other_press_chains(f, i))
-            prev_end = relax_frame
+
+            if presses_next_soon:
+                next_on = to_frame(events[i + 1]["t"])
+                pressed_end = min(off_frame, next_on - CROSS_GLIDE_FR)
+                pressed_end = max(pressed_end, on_frame + 0.5)
+                _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                             DIST_FLEX_PRESS, pressed_end)
+                prev_end = pressed_end
+            else:
+                # Lift back to the idle hover promptly after the note (never
+                # lingering in the pressed pose while the next grip forms), and be
+                # clear a frame before the next grip's onset.
+                relax_frame = off_frame + RELAX_LIFT
+                nxt_grip = next_onset_after(off_frame)
+                if nxt_grip is not None:
+                    relax_frame = min(relax_frame, nxt_grip - 1.0)
+                # Begin the lift early enough to finish in time - even a hair
+                # before the notated note end when the next grip lands at once.
+                pressed_end = min(off_frame, relax_frame - RELAX_LIFT)
+                pressed_end = max(pressed_end, on_frame + 0.5)
+                relax_frame = max(relax_frame, pressed_end + 1.0)
+                _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
+                             DIST_FLEX_PRESS, pressed_end)
+                key_idle(f, target, rot, relax_frame, other_press_chains(f, i))
+                prev_end = relax_frame
             prev_tr = (target, rot)
             last_frame = max(last_frame, off_frame + release_frames)
 
+    # Bezier with auto-clamped handles so every finger and the wrist EASE like a
+    # real hand: speed goes to zero at each rest key and peaks mid-move, instead
+    # of the one-sided, constant-rate ramp SINE gives (which let a finger arrive
+    # at full speed and then dead-stop - the acceleration spike). Same easing the
+    # pick hand already uses; clamped handles keep a press from overshooting.
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):
         for kp in fcurve.keyframe_points:
-            kp.interpolation = 'SINE'
+            kp.interpolation = 'BEZIER'
+            kp.handle_left_type = 'AUTO_CLAMPED'
+            kp.handle_right_type = 'AUTO_CLAMPED'
+        fcurve.update()
     return last_frame
 
 
