@@ -744,10 +744,17 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                     key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
                              other_press_chains(f, i - 1))
                     prev_end = hold_prev
-                # Start the eased reach REACH_LEAD_FR frames before the hover,
-                # but never before the previous grip releases (so the finger
-                # doesn't cross a still-pressing neighbour).
-                hold_frame = max(hover_frame - REACH_LEAD_FR, pr)
+                # Park the finger in its own CLEAR idle lane, then start the
+                # eased reach REACH_LEAD_FR frames before the hover (bounded by
+                # the previous grip's release so it never crosses a still-
+                # pressing neighbour). This parking key must stay DISTINCT from -
+                # and just before - the hover: if it collapsed onto the hover
+                # (when a neighbour sustains late and pins the hover), the long
+                # pre-reach span would interpolate straight from the old idle
+                # pose to the REACHING hover and swing through that neighbour
+                # (index drifting across the still-pressing middle at ~106).
+                hold_frame = min(max(hover_frame - REACH_LEAD_FR, pr),
+                                 hover_frame - 0.75)
                 if hold_frame > prev_end + 0.75:
                     key_idle(f, target, rot, hold_frame, other_press_chains(f, i))
                     prev_end = hold_frame
