@@ -73,87 +73,59 @@ DIST_FLEX_HOVER = 0.30
 PRESS_STAGGER = 0.014  # fret-slot y spread between fingers sharing a fret
 RELAX_LIFT = 2.5       # frames to lift a finger off a note back to its idle hover
 
-# An idle (non-pressing) fret finger hovers just over the strings at its OWN
-# fret, tracking the hand, rather than holding a fixed curl. The knuckles ride
-# the treble edge spread ALONG the neck - one per fret (index nut-side, pinky
-# bridge-side) - so the fingers are already in their own fret lanes; the only
-# thing that makes them cross is an idle finger reaching the FULL width across
-# the strings and draping over a neighbour at a nearby fret (idle middle over
-# the pressing index at ~112). A fixed curl can't avoid that without either
-# draping (shallow) or clenching into a fist at the treble edge (deep). Instead
-# each idle finger reaches only PARTWAY across - a gentle, lifted hover over the
-# strings at its own fret - so it stays clear of the pressing fingers at other
-# frets and glides with the hand between events, without the tight clench that
-# fully retracting to the treble edge would need.
+# An idle (non-pressing) fret finger holds a RELAXED ARCH in its own fret lane,
+# NOT a reach to a hover point. The knuckles ride the treble edge spread ALONG
+# the neck (one per fret, index nut-side, pinky bridge-side), so the fingers are
+# already in their own lanes; an idle finger only crosses a neighbour if it
+# reaches ACROSS or FORWARD out of that lane.
 #
-# The reach must also stay OUT AT ARM'S LENGTH along the finger, or the IK folds
-# it into a fist: a ~90 mm finger told to touch a point only ~35 mm from its own
-# knuckle (a small forward + across + down-to-the-strings hop) can only get there
-# by clenching the PIP to ~130 deg - a tense claw, not a hover. IDLE_FORWARD is
-# what buys the length back: reaching well toward the nut extends the finger down
-# the neck at a shallow angle, so it drapes over the strings in a relaxed ~80 deg
-# arch (fingertip past the knuckle, not curled back under the palm) while still
-# hovering just above its own lane.
-IDLE_HOVER = 0.022      # idle fingertip height above the strings (default reach)
-IDLE_FORWARD = 0.058    # idle reach toward the nut from the knuckle: keeps the
-                        # finger EXTENDED into a relaxed arch instead of clenched
-IDLE_ACROSS = 0.032     # idle reach ACROSS toward the strings from the treble edge
-IDLE_DIST_FLEX = 0.26   # distal curl of an idle finger
-
-# An idle finger's default hover (over the strings at its own fret) still runs
-# alongside a neighbour that is pressing when the presser's arched finger bulges
-# into it (index vs the pressing middle at ~frame 100). So the idle pose is not
-# a single reach: it is a small per-event SEARCH over how far the finger reaches
-# across and how high it hovers, picking the pose that stays farthest from the
-# pressing fingers' predicted finger boxes and, once it is clear, sits closest to
-# the natural default. Lifting the whole finger and/or shifting which string it
-# hovers over lets it clear the presser's arch.
-IDLE_CLEAR_TARGET = 0.020   # clearance (m) from a pressing finger that counts as clear
-_IDLE_ACROSS_GRID = (0.004, 0.014, 0.024, 0.032, 0.042, 0.052)
-_IDLE_LIFT_GRID = (0.022, 0.030, 0.050, 0.075, 0.105, 0.135)
+# The pose is authored DIRECTLY as gentle joint angles rather than solved by IK
+# to a target near the strings. Solving to a target is what produced the tense
+# "claw": a ~90 mm finger told to touch a point only ~35 mm from its own knuckle
+# (just over the strings at its own fret) can only get there by clenching the PIP
+# to ~130 deg. Extending the finger to un-clench it - reaching toward the nut -
+# fixed the curl but made the fingertip drape over pressing neighbours AND forced
+# the wrist search to yaw the whole hand ~30 deg to keep it clear, over-bending
+# the fret wrist past its ROM. Holding a fixed arch instead keeps the fingertip
+# in its own lane (past the knuckle, not curled under the palm), so it neither
+# reaches across a neighbour nor needs any wrist yaw to make room.
+IDLE_PROX = -0.45          # relaxed idle MCP (proximal) angle: a hair of lift
+IDLE_MID = 1.26            # relaxed idle PIP (middle) flex - a natural ~72 deg arch
+IDLE_DIST_FLEX = 0.26      # distal curl of an idle finger
+IDLE_CLEAR_TARGET = 0.020  # clearance (m) from a pressing finger that counts as clear
+# When a neighbour presses close by, the idle finger CURLS BACK - tightening the
+# PIP to draw the fingertip toward the palm WITHIN its own lane - just enough to
+# clear it, rather than reaching away or bending the wrist. Among poses that
+# clear, the loosest (least-curled) arch wins.
+_IDLE_MID_GRID = (IDLE_MID, 1.6, 1.9, 2.2, 2.5)
 
 
 def _idle_finger_pose(f, target, rot, press_chains=()):
-    """(yaw, prox, mid) hovering finger ``f`` over the strings at its own fret,
-    chosen from a small grid of reach/lift poses to keep the finger's predicted
-    box clear of the ``press_chains`` (world joint chains of the fingers pressing
-    this event), then as close to the natural default as that allows.
+    """(yaw, prox, mid) for a relaxed idle finger arched over its own fret lane.
 
-    A high lift would raise the fingertip above its own knuckle and so bow the
-    MCP backward - the idle fingers hyperextending to ~80 deg to clear a presser.
-    A real hand lifts an idle finger WITHIN the joint's ~25-30 deg extension, so
-    the proximal is clamped to FINGER_MCP_HYPEREXT here and the clearance is
-    scored on that clamped pose (a lifted, not a bent-back, finger)."""
-    spec = FRET_FINGERS[f]
+    Holds IDLE_PROX/IDLE_MID (a loose ~72 deg arch, no sideways yaw) by default.
+    When ``press_chains`` (the world joint chains of the fingers pressing this
+    event) come within IDLE_CLEAR_TARGET, the PIP curls back from _IDLE_MID_GRID
+    just enough to clear them - drawing the fingertip toward the palm within its
+    own lane, the real motion, rather than reaching away or bending the wrist.
+    Among poses that clear, the loosest arch wins."""
     rmat = _fret_rotation(*rot)
-    ko = rmat @ mathutils.Vector(spec["knuckle"])
-    knuckle = (target[0] + ko.x, target[1] + ko.y, target[2] + ko.z)
-    inv = rmat.transposed()
+    spec = FRET_FINGERS[f]
     best = None
-    for across in _IDLE_ACROSS_GRID:
-        for lift in _IDLE_LIFT_GRID:
-            tgt = (knuckle[0] - across, knuckle[1] + IDLE_FORWARD,
-                   fret_layout.STRING_Z + lift)
-            local = inv @ mathutils.Vector(
-                (tgt[0] - knuckle[0], tgt[1] - knuckle[1], tgt[2] - knuckle[2]))
-            yaw, prox, mid = _fret_ik(local.x, local.y, -local.z,
-                                      spec["lengths"], IDLE_DIST_FLEX)
-            prox = max(-FINGER_MCP_HYPEREXT, prox)   # lift, never bow the MCP back
-            if press_chains:
-                chain = _finger_fk_from_angles(target, rmat, spec, yaw, prox,
-                                               mid, IDLE_DIST_FLEX)
-                clr = min(_seg_dist(chain[k], chain[k + 1], pc[m], pc[m + 1])
-                          for pc in press_chains
-                          for k in range(3) for m in range(3))
-            else:
-                clr = IDLE_CLEAR_TARGET
-            # Maximise clearance up to the target; once clear, prefer the pose
-            # nearest the natural default reach/lift.
-            reg = abs(across - IDLE_ACROSS) + abs(lift - IDLE_HOVER)
-            score = min(clr, IDLE_CLEAR_TARGET) - 0.08 * reg
-            if best is None or score > best[0]:
-                best = (score, yaw, prox, mid)
-    return best[1], best[2], best[3]
+    for mid in _IDLE_MID_GRID:
+        if press_chains:
+            chain = _finger_fk_from_angles(target, rmat, spec, 0.0, IDLE_PROX,
+                                           mid, IDLE_DIST_FLEX)
+            clr = min(_seg_dist(chain[k], chain[k + 1], pc[m], pc[m + 1])
+                      for pc in press_chains
+                      for k in range(3) for m in range(3))
+        else:
+            clr = IDLE_CLEAR_TARGET
+        # Clear the presser up to the target; once clear, keep the loosest arch.
+        score = min(clr, IDLE_CLEAR_TARGET) - 0.012 * (mid - IDLE_MID)
+        if best is None or score > best[0]:
+            best = (score, mid)
+    return 0.0, IDLE_PROX, best[1]
 
 # Per-event wrist rotation freedom, chosen by a collision-penalizing grid
 # search (forward kinematics of the pressing fingers). Yaw turns the hand
@@ -411,11 +383,11 @@ def _pose_cost(press, wrist, rot, idle=()):
                 cost += COLLIDE_W * (TOUCH_CLEAR - dmin) ** 2
     for f in idle:
         spec = FRET_FINGERS[f]
-        ko = rot @ mathutils.Vector(spec["knuckle"])
-        knuckle = (wrist[0] + ko.x, wrist[1] + ko.y, wrist[2] + ko.z)
-        tgt = (knuckle[0] - IDLE_ACROSS, knuckle[1] + IDLE_FORWARD,
-               fret_layout.STRING_Z + IDLE_HOVER)
-        ich = _finger_fk(wrist, rot, spec, tgt, IDLE_DIST_FLEX)
+        # The idle finger's actual relaxed arch (see _idle_finger_pose), so the
+        # wrist search reads where it truly sits - in its own lane - and is not
+        # driven to yaw the whole hand to clear a reach the finger never makes.
+        ich = _finger_fk_from_angles(wrist, rot, spec, 0.0, IDLE_PROX,
+                                     IDLE_MID, IDLE_DIST_FLEX)
         for pc in chains:
             dmin = min(_seg_dist(ich[k], ich[k + 1], pc[m], pc[m + 1])
                        for k in range(3) for m in range(3))
