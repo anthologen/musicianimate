@@ -481,23 +481,26 @@ def _make_pick_mesh(name, length):
 # The mounted result is validated against human wrist ROM in animate_bassist
 # (_check_wrist_pose), which checks the -Z palm faces the strings, so a palm-away /
 # over-bent re-solve is caught loudly at build time.
-# Re-solved for the STEEP-forearm plucking arm (animate_bassist ELBOW_POLE_OVERRIDE["R"]
-# lifts the elbow up by the ribs so the forearm DESCENDS onto the strings). The whole
-# point of this round: the STRIKE pose -- not some rest pose -- must be the straight one.
+# Solved for the RELAXED-elbow plucking arm (animate_bassist ELBOW_POLE_OVERRIDE["R"] hangs
+# the upper arm nearly vertical, elbow tucked at the side, forearm coming gently ACROSS to
+# the bridge). The whole point of this round: the STRIKE pose -- not some rest pose -- must
+# be the straight one.
 # The pluck is a wrist swing whose bottom (deepest dip, the onset) is where the hand
 # actually reads; the earlier solves aligned finger=forearm at wrist-rotation ZERO, but the
 # swing then rotated the wrist ~74 deg to dip the pick to the strings, so the played wrist
 # was ALWAYS ~70 deg bent. Here the pick is pinched to hang straight DOWN off the palm
 # (PICK_PINCH + PICK_TIP_LOCAL below), so that dip-bottom IS the object pose: the swing
 # adds ~0 at the onset. PICK_HAND_ROT is then the strike orientation directly -- finger
-# axis (+y) along the descending forearm with a slight 12 deg downward break (the natural
+# axis (+y) along the (near-level) forearm with a slight 15 deg downward break (the natural
 # slight bend), and the -Z palm turned onto the strings. So the finger axis reads straight
 # and the pick still crosses the strings squarely, with only the gentle +/-swing breaking
-# the wrist a little between notes. MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD /
-# ELBOW_POLE_OVERRIDE) if the wear height or R elbow pole changes -- re-run the solver in
-# the round-19 notes (finger=forearm+12deg break, palm onto strings, blade so the pick's
-# head->tip is straight down => the swing argmin sits at the strike).
-PICK_HAND_ROT = mathutils.Euler((-0.187623, 0.0, -1.220470), 'XYZ').to_matrix()
+# the wrist a little between notes. Because the pick hangs off the PALM (not out along the
+# fingers), the hand can follow whatever forearm the relaxed elbow gives -- straightness no
+# longer needs a steep, elbow-raising forearm. MOUNT-COUPLED: redo this trio (and see
+# ANCHOR_WORLD / ELBOW_POLE_OVERRIDE) if the wear height or R elbow pole changes -- re-run
+# the solver in the round-19 notes (finger=forearm+15deg break, palm onto strings, blade so
+# the pick's head->tip is straight down => the swing argmin sits at the strike).
+PICK_HAND_ROT = mathutils.Euler((0.294463, 0.0, -0.832313), 'XYZ').to_matrix()
 # The pick is pinched between the THUMB PAD and the side of the INDEX. It sits close under
 # the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather than
 # out along the fingertips -- that is what lets the pick be short while still hanging down
@@ -519,8 +522,8 @@ PICK_PINCH = (-0.015, 0.010, -0.035)
 # straight. ~35 mm, just the tip past the fist; still crosses the strings ~square (no along-
 # string rake) because the swing pivots about the string axis and the blade has no along-
 # string component.
-PICK_MESH_ROT = (-0.577754, 0.153895, -0.045819)
-PICK_TIP_LOCAL = (-0.020375, -0.008924, -0.064026)
+PICK_MESH_ROT = (-1.180094, 0.293406, -0.197252)
+PICK_TIP_LOCAL = (-0.026860, -0.026297, -0.049950)
 
 
 def pick_world_offset(v):

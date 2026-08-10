@@ -124,19 +124,19 @@ STRAP_NAME = "BassStrap"
 # points BEHIND the player) the two-bone arm IK swings the elbow behind the thin bass
 # body and the forearm spears straight through it; this pole pulls the elbow to the
 # FRONT so the forearm instead lies over the front of the body toward the strings.
-# (2) It picks WHERE on the arm's elbow circle the joint sits, which sets the forearm's
-# APPROACH ANGLE -- the real dial for a natural pick wrist. The strings sit below-and-in
-# front of the plucking wrist, so the pick (held out along the fingers) has to reach DOWN
-# to them; if the forearm comes in near-horizontal the hand must fold ~70 deg to make that
-# reach (the old bent-wrist look). This pole lifts the elbow up by the ribs (~17 cm above
-# the wrist) so the forearm DESCENDS steeply onto the strings and the hand simply continues
-# that line with a slight downward break -- the wrist reads nearly straight. The elbow
-# still clears the chest by ~3 cm on the player's side. The pick hand orientation (below)
-# is solved to this forearm so finger axis ~= forearm. Keyed per side. The fretting (L)
-# arm gets a gentler one that TUCKS the elbow down and slightly forward so the forearm
-# rises up the neck to the hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only
-# the playing shot; build_bassist's free-standing rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.15, -0.5, 0.72), "L": (0.55, 0.1, 0.55)}
+# (2) It picks WHERE on the arm's elbow circle the joint sits, which sets both how the
+# elbow reads (tucked vs chicken-winged) and the forearm's approach angle. This pole hangs
+# the UPPER arm nearly straight DOWN from the shoulder (~7 deg off vertical) so the elbow
+# rides tucked at the player's side (~3-4 cm off the chest, not winged out) and the forearm
+# comes gently ACROSS to the bridge -- the relaxed low-slung pick posture from the reference
+# photo. The wrist is NOT kept straight by a steep forearm here (that winged the elbow up);
+# instead the pick hangs off the PALM (see build_hands), so the hand orientation is free to
+# follow this relaxed forearm and the finger axis is solved to it (a slight 15 deg break) --
+# straight wrist AND a relaxed, un-raised elbow. Keyed per side. The fretting (L) arm gets a
+# gentler one that TUCKS the elbow down and slightly forward so the forearm rises up the
+# neck to the hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only the playing
+# shot; build_bassist's free-standing rest pose is left untouched.
+ELBOW_POLE_OVERRIDE = {"R": (0.1, -0.4, 0.45), "L": (0.55, 0.1, 0.55)}
 # The bass, strap and (via the chest, which passively inherits it) the shoulders all
 # ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"
