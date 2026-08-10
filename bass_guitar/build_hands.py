@@ -481,24 +481,29 @@ def _make_pick_mesh(name, length):
 # The mounted result is validated against human wrist ROM in animate_bassist
 # (_check_wrist_pose), which checks the -Z palm faces the strings, so a palm-away /
 # over-bent re-solve is caught loudly at build time.
-# Re-solved for the LOW-WORN plucking arm (animate_bassist ANCHOR_WORLD z=1.05 +
-# ELBOW_POLE_OVERRIDE["R"], forearm descending to the bridge at a ~115 deg elbow): the
-# finger axis (+y) is aligned to that forearm so the wrist is ~straight. The roll is
-# PRONATED so the POSED palm (this base plus the animate_pick_hand wrist swing) faces DOWN
-# toward the strings through the whole stroke -- NOT the earlier roll, which looked
-# palm-down at rest but the pick swing rolled it UP during play (the "wrist rotated up"
-# look): the swing is a wrist rotation about the string axis, so the palm's facing must be
-# solved on the POSED bone (obj @ pose), not the object alone. At this roll the posed palm
-# rides ~0.5 down / 0.7 into-the-strings and, because the swing rolls it, it turns MORE
-# toward the ground around the DOWNSTROKE poise (~0.72 down) and least on the upstroke
-# (~0.28) -- the natural pick-hand roll. Blade below re-derived for this orientation.
-# MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD) if the wear height or R elbow pole
-# changes.
-PICK_HAND_ROT = mathutils.Euler((-1.709731, -1.923813, 0.886423), 'XYZ').to_matrix()
-# The pick is pinched between the THUMB PAD and the side of the INDEX at the thumb edge
-# of the fist -- not dead-centre. The hand is a RIGHT hand (palm -z, fingers +y), so the
-# thumb/index/pick live at NEGATIVE local x.
-PICK_PINCH = (-0.032, 0.046, -0.004)
+# Re-solved for the STEEP-forearm plucking arm (animate_bassist ELBOW_POLE_OVERRIDE["R"]
+# lifts the elbow up by the ribs so the forearm DESCENDS onto the strings). The whole
+# point of this round: the STRIKE pose -- not some rest pose -- must be the straight one.
+# The pluck is a wrist swing whose bottom (deepest dip, the onset) is where the hand
+# actually reads; the earlier solves aligned finger=forearm at wrist-rotation ZERO, but the
+# swing then rotated the wrist ~74 deg to dip the pick to the strings, so the played wrist
+# was ALWAYS ~70 deg bent. Here the pick is pinched to hang straight DOWN off the palm
+# (PICK_PINCH + PICK_TIP_LOCAL below), so that dip-bottom IS the object pose: the swing
+# adds ~0 at the onset. PICK_HAND_ROT is then the strike orientation directly -- finger
+# axis (+y) along the descending forearm with a slight 12 deg downward break (the natural
+# slight bend), and the -Z palm turned onto the strings. So the finger axis reads straight
+# and the pick still crosses the strings squarely, with only the gentle +/-swing breaking
+# the wrist a little between notes. MOUNT-COUPLED: redo this trio (and see ANCHOR_WORLD /
+# ELBOW_POLE_OVERRIDE) if the wear height or R elbow pole changes -- re-run the solver in
+# the round-19 notes (finger=forearm+12deg break, palm onto strings, blade so the pick's
+# head->tip is straight down => the swing argmin sits at the strike).
+PICK_HAND_ROT = mathutils.Euler((-0.187623, 0.0, -1.220470), 'XYZ').to_matrix()
+# The pick is pinched between the THUMB PAD and the side of the INDEX. It sits close under
+# the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather than
+# out along the fingertips -- that is what lets the pick be short while still hanging down
+# far enough for a straight wrist to reach the strings. The hand is a RIGHT hand (palm -z,
+# fingers +y), so the thumb/index/pick live at NEGATIVE local x.
+PICK_PINCH = (-0.015, 0.010, -0.035)
 # PICK_MESH_ROT / PICK_TIP_LOCAL aim the pick BLADE so that, in the mounted pose, it lies
 # in the across-string / depth plane and CROSSES the strings at ~90 deg (instead of
 # raking nearly ALONG them) while still hanging down far enough to strike. Because the
@@ -508,13 +513,14 @@ PICK_PINCH = (-0.032, 0.046, -0.004)
 # -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
 # PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
 # rotation from the pick mesh's built -z axis to d_local.
-# Pick shortened to ~27 mm (was 42) with the blade direction kept -- a short pick with
-# just the tip past the fist. Because animate_hands lands the TIP on the strings, a
-# shorter pick also brings the whole hand DOWN closer to the strings (reference grip).
-# 27 mm is the shortest that keeps the curled fingers off the strings through the
-# deviation swing dip (25 mm grazed a string at the swing bottom).
-PICK_MESH_ROT = (0.307966, 1.079680, 0.185476)
-PICK_TIP_LOCAL = (-0.055815, 0.049861, -0.016137)
+# Here the blade is aimed straight DOWN off the palm (its head->tip vector, in the flat
+# frame, points along -Z perpendicular to the swing axis) so the dip-bottom coincides with
+# the straight object pose -- that is the whole trick that lets the played wrist be
+# straight. ~35 mm, just the tip past the fist; still crosses the strings ~square (no along-
+# string rake) because the swing pivots about the string axis and the blade has no along-
+# string component.
+PICK_MESH_ROT = (-0.577754, 0.153895, -0.045819)
+PICK_TIP_LOCAL = (-0.020375, -0.008924, -0.064026)
 
 
 def pick_world_offset(v):
@@ -580,10 +586,12 @@ def build_pick_hand(coll, mat):
             w, h = _finger_cross(name, seg)
             _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
-    # Thumb lies along the thumb (-x) edge, its pad pressing down on the pick
-    # so the pick is pinched between the thumb and the index's side.
-    thumb_base = (-0.034, 0.004, 0.010)
-    thumb_knuckle = (-0.036, 0.030, 0.001)
+    # Thumb lies along the thumb (-x) edge and curls down toward the PALM (-z), its pad
+    # pressing on the pick so the pick is pinched between the thumb and the index's side.
+    # The pinch now sits low on the palm (see PICK_PINCH), so the thumb rolls under to meet
+    # it there instead of reaching out along the fingertips.
+    thumb_base = (-0.032, 0.004, -0.004)
+    thumb_knuckle = (-0.028, 0.016, -0.024)
     _seg_box(arm_obj, coll, mat, 0.017, 0.016, thumb_base, thumb_knuckle)
     _seg_box(arm_obj, coll, mat, 0.016, 0.015, thumb_knuckle, PICK_PINCH)
 
