@@ -158,20 +158,62 @@ IDLE_SYMPATHY_MAX = math.radians(16.0)  # farthest an idle finger leans out of t
 _IDLE_YAW_GRID = tuple(i * IDLE_SYMPATHY_MAX / 3.0 for i in range(-3, 4))
 IDLE_YAW_COST = 0.030     # score penalty per rad of sympathetic lean
 IDLE_CURL_COST = 0.012    # score penalty per rad of extra PIP curl
+# A finger with no note of its own does not hang out in its own string lane -
+# that left, e.g., the ring finger splayed straight across to a string nobody was
+# playing while the others fretted (it read as an outstretched finger frozen in
+# place). A real player's unused fingers ride WITH the hand, curled just over the
+# same string(s) being played. So an idle finger is aimed at the group's AVERAGE
+# across-string position (the mean fingertip x of whoever is pressing), kept in
+# its own along-neck lane, hovering IDLE_HOVER above the strings. Reaching that
+# nearer string means curling in more, which also stops it looking outstretched.
+IDLE_HOVER = 0.008         # m the idle fingertip hovers above the string plane
 
 
-def _idle_finger_pose(f, target, rot, press_chains=()):
-    """(yaw, prox, mid) for a relaxed idle finger arched over its own fret lane.
+def _idle_hover_pose(f, target, rmat, across_target):
+    """(yaw, prox, mid) placing idle finger ``f``'s fingertip over the group's
+    average string (``across_target``) at its own along-neck lane, hovering just
+    above the strings. Solved with the same two-link IK a press uses, but aimed
+    at a point lifted off the strings and slid across to the played string."""
+    spec = FRET_FINGERS[f]
+    # Keep the finger in its own lane: reach the along-neck (y) its neutral arch
+    # already points to, only sliding the tip across (x) to the played string and
+    # up (z) to a hover. Aiming at its own y avoids bunching every idle finger at
+    # the pressed fret.
+    lane_y = _finger_fk_from_angles(target, rmat, spec, 0.0, IDLE_PROX, IDLE_MID,
+                                    IDLE_DIST_FLEX)[3].y
+    knuckle = mathutils.Vector(target) + rmat @ mathutils.Vector(spec["knuckle"])
+    tgt = mathutils.Vector((across_target, lane_y,
+                            fret_layout.STRING_Z + IDLE_HOVER))
+    local = rmat.transposed() @ (tgt - knuckle)
+    return _fret_ik(local.x, local.y, -local.z, spec["lengths"], IDLE_DIST_FLEX)
 
-    Holds IDLE_PROX/IDLE_MID (a loose ~72 deg arch, no sideways yaw) by default.
-    When ``press_chains`` (the world joint chains of the fingers pressing this
-    event) come within IDLE_CLEAR_TARGET, the finger searches a small grid of
-    sympathetic knuckle LEANS (_IDLE_YAW_GRID) and PIP CURLS (_IDLE_MID_GRID) and
-    takes the pose that clears the presser closest to the relaxed neutral - so it
-    drifts aside (and curls a little) instead of a neighbour swinging across it.
-    Among poses that clear, the least-deviating one wins."""
+
+def _idle_finger_pose(f, target, rot, press_chains=(), across_target=None):
+    """(yaw, prox, mid) for a relaxed idle finger.
+
+    When notes are being fretted, ``across_target`` is the mean across-string x
+    of the pressing fingertips: the idle finger curls in to hover over that same
+    string (see IDLE_HOVER), riding with the hand instead of splaying out into
+    its own lane. That hover pose is used as long as it stays clear of the
+    pressers.
+
+    Otherwise - no pressers this event, or the hover pose would foul one - it
+    falls back to the loose neutral arch (IDLE_PROX/IDLE_MID), searching a small
+    grid of sympathetic knuckle LEANS (_IDLE_YAW_GRID) and PIP CURLS
+    (_IDLE_MID_GRID) for the pose that clears the presser closest to neutral, so
+    it drifts aside rather than a neighbour swinging across it."""
     rmat = _fret_rotation(*rot)
     spec = FRET_FINGERS[f]
+    # The average-string hover is used only in near-monophonic grips (at most one
+    # other finger pressing). When two or more fingers press (a chord/octave grip)
+    # the mean string sits between them and curling an idle finger there crowds
+    # its neighbours, so it keeps the neutral lane instead.
+    if across_target is not None and len(press_chains) <= 1:
+        hover = _idle_hover_pose(f, target, rmat, across_target)
+        if _angles_clear(f, target, rot,
+                         (hover[0], hover[1], hover[2], IDLE_DIST_FLEX),
+                         press_chains):
+            return hover
     if not press_chains:
         return 0.0, IDLE_PROX, IDLE_MID
     best = None
@@ -653,6 +695,10 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
     # predicted world joint chain of each pressing finger, so idle fingers can be
     # posed to keep clear of them.
     event_press = [{n["finger"]: n for n in _press_notes(ev)} for ev in events]
+    # Mean across-string x of the fingers pressing each event - where the idle
+    # fingers hover so they ride over the played string(s) (see _idle_finger_pose).
+    event_across = [(sum(n["x"] for n in d.values()) / len(d)) if d else None
+                    for d in event_press]
     event_press_chains = []
     for ev, target, rot in zip(events, targets, rots):
         rmat = _fret_rotation(*rot)
@@ -713,15 +759,16 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 return o
         return None
 
-    def key_idle(f, target, rot, frame, press_chains):
-        y, p, m = _idle_finger_pose(f, target, rot, press_chains)
+    def key_idle(f, target, rot, frame, press_chains, across_target):
+        y, p, m = _idle_finger_pose(f, target, rot, press_chains, across_target)
         _pose_finger(pbones, f, y, p, m, IDLE_DIST_FLEX, frame)
 
     last_frame = frame_start
     for f in FRET_FINGERS:
         spec = FRET_FINGERS[f]
-        # Start idle over the finger's own string, at the first event's hand pose.
-        key_idle(f, targets[0], rots[0], frame_start, other_press_chains(f, 0))
+        # Start idle hovering over the first event's played string.
+        key_idle(f, targets[0], rots[0], frame_start, other_press_chains(f, 0),
+                 event_across[0])
         prev_end = frame_start
         prev_tr = None   # (target, rot) of the previous event, for holding idle
         linger = None    # relaxed curl a just-released finger holds (see retract)
@@ -739,8 +786,9 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 hold_prev = prev_release_for(f, i) - 0.5
                 if (linger is None and prev_tr is not None
                         and prev_end + 0.75 < hold_prev < onset - 3.0):
+                    # A transitional hold - relax to the neutral lane, not a hover.
                     key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
-                             other_press_chains(f, i - 1))
+                             other_press_chains(f, i - 1), None)
                     prev_end = hold_prev
                 # Prefer to LINGER in the relaxed curl the finger lifted into
                 # after its last note (a real hand rests its fingers curled, not
@@ -750,7 +798,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                 if linger is not None and linger_ok(f, target, rot, linger, i):
                     _pose_finger(pbones, f, *linger, frame)
                 else:
-                    key_idle(f, target, rot, frame, pcs)
+                    key_idle(f, target, rot, frame, pcs, event_across[i])
                     linger = None
                 prev_end = frame
                 prev_tr = (target, rot)
@@ -823,7 +871,7 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                     if (prev_tr is not None
                             and prev_end + 0.75 < hold_prev < hover_frame - 0.5):
                         key_idle(f, prev_tr[0], prev_tr[1], hold_prev,
-                                 other_press_chains(f, i - 1))
+                                 other_press_chains(f, i - 1), None)
                         prev_end = hold_prev
                 # Park the finger in its own CLEAR lane, then start the eased reach
                 # REACH_LEAD_FR frames before the hover. Keep the relaxed curl if
@@ -838,8 +886,10 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                     if linger is not None and linger_ok(f, target, rot, linger, i):
                         _pose_finger(pbones, f, *linger, hold_frame)
                     else:
+                        # Park in the neutral lane just before reaching, so the
+                        # pre-reach glide can't sweep a hover through a neighbour.
                         key_idle(f, target, rot, hold_frame,
-                                 other_press_chains(f, i))
+                                 other_press_chains(f, i), None)
                     prev_end = hold_frame
 
             # If this same finger presses again very soon, it must lift off THIS
@@ -905,8 +955,10 @@ def animate_fret_hand(arm_obj, notes, fps, frame_start,
                     relax_frame = max(relax_frame, pressed_end + 1.0)
                     _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
                                  DIST_FLEX_PRESS, pressed_end)
+                    # Vacating = get OUT of the way; relax to the neutral lane
+                    # rather than hover over the string just left.
                     key_idle(f, target, rot, relax_frame,
-                             other_press_chains(f, i))
+                             other_press_chains(f, i), None)
                     linger = None
                     prev_end = relax_frame
             prev_tr = (target, rot)
