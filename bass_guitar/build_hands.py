@@ -12,7 +12,8 @@ collection containing two armatures:
     side, palm beside the treble edge below string level, knuckles riding
     the edge (index toward the nut, pinky toward the bridge), fingers
     arching over the strings, and a static thumb box pressing the back of
-    the neck. The knuckle spread is widened for the bigger bass neck.
+    the neck. The hand is a realistic size matching the plucking hand; the
+    wide bass frets are covered by finger splay, not a stretched palm.
   - ``PluckHand`` (fingerstyle, the default): a hand hovering above the
     strings near the bridge pickup, with a static thumb box anchored on
     the pickup (floating-thumb style) and two articulated plucking
@@ -108,16 +109,21 @@ def pluck_local_offset(w):
 
 # ---------------------------------------------------------------------------
 # Fret-hand dimensions (metres), in armature-local space. Knuckle x spreads
-# the fingers along the neck; the spread is wider than the guitar's to sit
-# over the bass's bigger frets. y is the reach direction across the strings.
+# the fingers along the neck; y is the reach direction across the strings.
+# The knuckle span (index->pinky ~74 mm) and palm are sized to a realistic
+# human hand -- the SAME hand size as the plucking hand -- so the two hands
+# read as a matched pair. The wide bass frets are reached NOT by a stretched
+# palm but by finger SPLAY (the IK's z-rotation / knuckle abduction), the
+# reach mechanism the animator already drives (see FINGER_ROT_LIMIT and
+# animate_hands' _fret_rotation).
 # ---------------------------------------------------------------------------
 
 FRET_FINGERS = {
     #        knuckle (x, y, z)             (prox, mid, dist) segment lengths
-    1: {"knuckle": (0.052, 0.050, 0.0), "lengths": (0.044, 0.027, 0.021)},
-    2: {"knuckle": (0.018, 0.055, 0.0), "lengths": (0.048, 0.031, 0.023)},
-    3: {"knuckle": (-0.018, 0.053, 0.0), "lengths": (0.045, 0.029, 0.022)},
-    4: {"knuckle": (-0.052, 0.046, 0.0), "lengths": (0.037, 0.025, 0.020)},
+    1: {"knuckle": (0.037, 0.050, 0.0), "lengths": (0.044, 0.027, 0.021)},
+    2: {"knuckle": (0.013, 0.055, 0.0), "lengths": (0.048, 0.031, 0.023)},
+    3: {"knuckle": (-0.013, 0.053, 0.0), "lengths": (0.045, 0.029, 0.022)},
+    4: {"knuckle": (-0.037, 0.046, 0.0), "lengths": (0.037, 0.025, 0.020)},
 }
 
 # Plucking fingers: index (pi) and middle (pm), close together. Under
@@ -135,10 +141,97 @@ PLUCK_FINGERS = {
     "pm": {"knuckle": (0.011, 0.040, 0.0), "lengths": (0.048, 0.031, 0.023)},
 }
 
-FINGER_BOX_W = 0.012
-FINGER_BOX_H = 0.013
-FRET_PALM_SIZE = (0.105, 0.080, 0.022)
+# --- Finger cross-section (metres), from hand anthropometry ------------------
+# Each phalanx box approximates an average adult finger: broadest at the
+# proximal phalanx and TAPERING to the tip, with the little finger the
+# slimmest and the index/middle the widest. Breadths (side-to-side) follow
+# measured digit-breadth norms -- ~18 mm proximal for the index/middle down
+# to ~15 mm for the little finger, tapering to ~11-14 mm at the fingertip
+# (Garrett 1971 hand anthropometry; ANSUR). Depth (dorsopalmar) runs ~1 mm
+# under the breadth, a finger being a touch wider than it is thick. This
+# replaced a flat 12x13 mm box on every phalanx, which -- being far thinner
+# than a real finger -- left oversized gaps between the fingers.
+#
+# The gaps are ALSO bounded by the fret-hand knuckle PITCH (FRET_FINGERS
+# knuckle x: ~24-26 mm centre-to-centre, a large-hand span chosen so the
+# fingers cover the wide bass frets). That pitch is baked into the animation
+# and so is left as-is; realistic finger widths shrink the gaps to a natural
+# few millimetres rather than closing them entirely. The thumb keeps its own
+# (larger) width where it is built, so it stays the thickest digit.
+#                    (width, height) for prox / mid / dist phalanx
+FINGER_CROSS = {
+    "index":  {"prox": (0.018, 0.017), "mid": (0.016, 0.015), "dist": (0.014, 0.013)},
+    "middle": {"prox": (0.018, 0.017), "mid": (0.016, 0.015), "dist": (0.014, 0.013)},
+    "ring":   {"prox": (0.017, 0.016), "mid": (0.015, 0.014), "dist": (0.013, 0.012)},
+    "pinky":  {"prox": (0.015, 0.014), "mid": (0.013, 0.012), "dist": (0.011, 0.011)},
+}
+
+# Which anthropometric profile each finger key -- across the fret (1..4),
+# pluck (pi/pm) and pick-fist (index..pinky) rigs -- draws its section from.
+FINGER_PROFILE = {
+    1: "index", 2: "middle", 3: "ring", 4: "pinky",   # fret fingers
+    "pi": "index", "pm": "middle",                     # pluck fingers
+    "index": "index", "middle": "middle",              # pick fist
+    "ring": "ring", "pinky": "pinky",
+}
+
+
+def _finger_cross(key, seg):
+    """(width, height) of finger `key`'s `seg` phalanx box, from anthropometry."""
+    return FINGER_CROSS[FINGER_PROFILE[key]][seg]
+
+
+# Both palms are the same realistic size so the two hands match; the fret
+# palm just covers the (now realistic) knuckle span rather than a stretched one.
+FRET_PALM_SIZE = (0.086, 0.072, 0.024)
 PLUCK_PALM_SIZE = (0.085, 0.070, 0.026)
+
+# --- Finger joint range-of-motion limits (human norms; degrees) --------------
+# The finger joints are caged the same way build_bassist cages the ELBOW and KNEE:
+# real hinges that flex freely but must never bend BACKWARD past their small natural
+# extension, and (for the inter-phalangeal joints) neither splay sideways nor twist.
+# They are LOCAL LIMIT_ROTATION constraints applied at BUILD time, so they only ever
+# GUARD future hand poses -- the shipped fret/pluck performance already lives inside
+# them (its curls are baked keyframes within these bounds).
+#
+# In this rig's finger frame (bone runs +y): X = curl (flexion is NEGATIVE x),
+# Z = knuckle splay/abduction, Y = axial twist. Bounds follow measured active-ROM
+# norms for the index-through-little fingers (Thieme 2024 normative study; AAOS /
+# goniometry references):
+#   * MCP flexion ~85-90, extension (hyperextension) ~25-30 (the little finger the
+#     most, mean ~26 and up toward ~38 at +2SD), abduction/adduction ~+/-25.
+#   * PIP flexion ~95-110, ~0 hyperextension, no splay/twist.
+#   * DIP flexion ~80-85, ~0-10 hyperextension, no splay/twist.
+# The MCP was previously widened to +/-65 splay / +40 extension so the fret hand could
+# REACH across the wide bass frets by knuckle-splay alone -- but that let a pressing
+# finger deviate ~57 deg and sweep UNDER its neighbours (the octave double-stop at
+# frame 117). Reach is now the WRIST's job (animate_hands caps the finger IK splay at
+# FINGER_MCP_SPLAY and the wrist search penalizes any pose that demands more), so the
+# splay comes back to +/-30 (the ~25 deg norm plus a little guard headroom over the
+# 26 deg IK cap) and extension to +35 (the little finger's real backward range, which
+# the pinky uses reaching up to a high octave string). The one joint kept generous is
+# the MID (PIP): this rig's closed-form IK lumps the distal phalanx INTO the middle
+# link (see animate_hands _finger_ik), so f<n>_mid.x carries the COMBINED PIP+DIP fold
+# (~190 deg total in a real hand) while f<n>_dist.x barely moves -- the stylized fret
+# curl drives it to ~140, which is within that combined envelope even though it is past
+# the PIP-alone norm. Clamping it would unseat the press. See animate_hands.
+FINGER_ROT_LIMIT = {
+    "prox": {"x": (-100.0, 35.0), "y": (-8.0, 8.0), "z": (-30.0, 30.0)},  # MCP
+    "mid":  {"x": (-142.0, 5.0),  "y": (-5.0, 5.0), "z": (-6.0, 6.0)},    # PIP(+lumped DIP): flex only
+    "dist": {"x": (-95.0, 10.0),  "y": (-5.0, 5.0), "z": (-6.0, 6.0)},    # DIP: flex only
+}
+
+
+def _limit_rot(pbone, limit):
+    """Add a LOCAL-space LIMIT_ROTATION constraint (degrees) to a hand bone --
+    the same soft cage build_bassist puts on the body's FK joints."""
+    lr = pbone.constraints.new('LIMIT_ROTATION')
+    lr.owner_space = 'LOCAL'
+    for axis in ("x", "y", "z"):
+        setattr(lr, f"use_limit_{axis}", True)
+        lo, hi = limit[axis]
+        setattr(lr, f"min_{axis}", math.radians(lo))
+        setattr(lr, f"max_{axis}", math.radians(hi))
 
 # Where idle hands hover before the animator takes over.
 REST_LOCATION = {
@@ -251,13 +344,18 @@ def _build_finger_chains(arm_obj, fingers):
     bpy.ops.object.mode_set(mode='OBJECT')
     for pbone in arm_obj.pose.bones:
         pbone.rotation_mode = 'XYZ'
+    # Cage each phalanx to its human range of motion (one-way flexion hinges).
+    for name in fingers:
+        for seg in ("prox", "mid", "dist"):
+            _limit_rot(arm_obj.pose.bones[f"f{name}_{seg}"], FINGER_ROT_LIMIT[seg])
 
 
 def _add_finger_boxes(arm_obj, coll, mat, fingers):
     for name, spec in fingers.items():
         for seg, length in zip(("prox", "mid", "dist"), spec["lengths"]):
+            w, h = _finger_cross(name, seg)
             _bone_box(arm_obj, coll, mat, f"f{name}_{seg}",
-                      (FINGER_BOX_W, length * 0.92, FINGER_BOX_H),
+                      (w, length * 0.92, h),
                       (0.0, -length / 2.0, 0.0))
 
 
@@ -273,14 +371,30 @@ def build_fret_hand(coll, mat):
 
     # Static thumb reaching under the neck to press its back, opposite the
     # fingers (specified as a world offset from the wrist, converted into
-    # the tilted armature's local frame).
-    thumb_center_w = (-0.050, 0.008, -0.022)
+    # the tilted armature's local frame). It sits on the INDEX/radial edge of
+    # the palm (world +y here maps to armature-local +x, the index side --
+    # cf. FRET_FINGERS, index knuckle x=+0.037), where a real hand's thumb
+    # attaches, rather than bisecting the back of the hand.
+    # It is built as TWO segments meeting at a knuckle (the thumb's IP joint)
+    # so it reads as a jointed thumb rather than one rigid stick: a longer
+    # proximal segment leaving the palm, then a shorter distal segment that
+    # flexes at the joint to lie flatter against the neck (as a thumb pad
+    # pressing the back does), tapering toward the tip. Same static parenting
+    # to the wrist as the pluck/pick-hand thumbs.
+    thumb_center_w = (-0.050, 0.040, -0.022)
     thumb_dir_w = mathutils.Vector((-0.94, 0.12, -0.32)).normalized()
-    c_local = _fret_local_offset(thumb_center_w)
-    d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w))
-    _bone_box(arm_obj, coll, mat, "wrist", (0.019, 0.075, 0.016),
-              (c_local[0], c_local[1] - 0.030, c_local[2]),
-              rotation=d_local.to_track_quat('Y', 'Z').to_euler())
+    c_local = mathutils.Vector(_fret_local_offset(thumb_center_w))
+    d_local = mathutils.Vector(_fret_local_offset(thumb_dir_w)).normalized()
+    thumb_len, prox_len, dist_len = 0.075, 0.045, 0.030
+    base = c_local - d_local * (thumb_len / 2.0)   # meets the palm
+    knuckle = base + d_local * prox_len            # IP joint
+    # Distal phalanx flexes ~18 deg at the knuckle, curling the tip to lie
+    # flatter along the neck's back.
+    dist_dir = (mathutils.Matrix.Rotation(math.radians(18), 4, 'X')
+                @ d_local).normalized()
+    tip = knuckle + dist_dir * dist_len
+    _seg_box(arm_obj, coll, mat, 0.019, 0.016, base, knuckle)
+    _seg_box(arm_obj, coll, mat, 0.017, 0.015, knuckle, tip)
     return arm_obj
 
 
@@ -307,13 +421,15 @@ def build_pluck_hand(coll, mat):
     # proximal flexes DOWN from the knuckle, the middle curls under, and
     # the tip tucks gently back up toward the palm, staying above the
     # strings. Laid out as world offsets (knuckle K -> P -> M -> tip T).
-    for K, P, M, T in (
-            ((0.037, -0.032, -0.015), (0.062, -0.032, -0.049),
-             (0.040, -0.032, -0.060), (0.022, -0.032, -0.052)),   # ring
-            ((0.037, -0.052, -0.016), (0.060, -0.052, -0.048),
-             (0.040, -0.052, -0.058), (0.024, -0.052, -0.050))):  # pinky
-        for wa, wb in ((K, P), (P, M), (M, T)):
-            _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H,
+    for profile, (K, P, M, T) in (
+            ("ring", ((0.037, -0.032, -0.015), (0.062, -0.032, -0.049),
+                      (0.040, -0.032, -0.060), (0.022, -0.032, -0.052))),
+            ("pinky", ((0.037, -0.052, -0.016), (0.060, -0.052, -0.048),
+                       (0.040, -0.052, -0.058), (0.024, -0.052, -0.050)))):
+        for seg, (wa, wb) in zip(("prox", "mid", "dist"),
+                                 ((K, P), (P, M), (M, T))):
+            w, h = _finger_cross(profile, seg)
+            _seg_box(arm_obj, coll, mat, w, h,
                      pluck_local_offset(wa), pluck_local_offset(wb))
 
     # Thumb: floating-thumb anchor resting on the pickup near the low-E
@@ -343,18 +459,130 @@ def _make_pick_mesh(name, length):
     return mesh
 
 
-# Pick geometry (armature-local), mirroring the guitar rig for --pick mode.
-PICK_PITCH = 0.55
-PICK_YAW = -0.25
-PICK_HAND_ROT = (mathutils.Matrix.Rotation(PICK_YAW, 3, 'Z')
-                 @ mathutils.Matrix.Rotation(-PICK_PITCH, 3, 'X'))
-PICK_PINCH = (0.014, 0.044, -0.008)
-PICK_TIP_LOCAL = (0.014, 0.044, -0.050)
+# Pick geometry (armature-local), for --style pick. The constants below place the
+# picking fist and its pick in the FLAT authoring frame; animate_hands re-derives the
+# whole pluck swing from PICK_HAND_ROT + PICK_TIP_LOCAL, and the assembly is then mounted
+# rigidly onto the standing bassist (see animate_bassist). So all of them are solved for
+# the MOUNTED playing pose and would need re-solving if the wear angle (NECK_ELEV etc.)
+# or the plucking arm's pose changed a lot. Bass-only: the guitarist has its own
+# guitar/build_hands.py (PICK_ROT), unaffected.
+#
+# PICK_HAND_ROT -- the fist orientation, solved against the mounted plucking forearm so
+# the wrist READS AS NEUTRAL: the finger axis (+y) is aligned with the incoming forearm
+# (only a slight ~5 deg flexion remains) and -- crucially -- the PALM faces ONTO the
+# strings, fingers/pick curling down toward them, back of the hand up (the correct pick
+# posture). NOTE the palm is the hand's local -Z side (fingers curl toward -z, the pick
+# is pinched there); the +Z side is the BACK of the hand. Getting that backwards points
+# the palm out at the audience -- the hand then reads as snapped 180 deg the wrong way.
+# Recipe (mounted pose, frame ~20): e = plucking forearm dir (elbow->wrist, world); build
+# a right-handed basis R_des with columns [across, finger, +Z=back] so that the -Z (palm)
+# axis faces the STRINGS (the back +Z points OUT of the bass face, toward the audience and
+# up); finger=e; then PICK_HAND_ROT = holderR^-1 @ R_des (holderR = BassRig world rot).
+# The mounted result is validated against human wrist ROM in animate_bassist
+# (_check_wrist_pose), which checks the -Z palm faces the strings, so a palm-away /
+# over-bent re-solve is caught loudly at build time.
+# Solved for the RELAXED-elbow plucking arm (animate_bassist ELBOW_POLE_OVERRIDE["R"] hangs
+# the upper arm nearly vertical, elbow tucked at the side, forearm coming gently ACROSS to
+# the bridge). The whole point of this round: the STRIKE pose -- not some rest pose -- must
+# be the straight one.
+# The pluck is a wrist swing whose bottom (deepest dip, the onset) is where the hand
+# actually reads; the earlier solves aligned finger=forearm at wrist-rotation ZERO, but the
+# swing then rotated the wrist ~74 deg to dip the pick to the strings, so the played wrist
+# was ALWAYS ~70 deg bent. Here the pick is pinched to hang straight DOWN off the palm
+# (PICK_PINCH + PICK_TIP_LOCAL below), so that dip-bottom IS the object pose: the swing
+# adds ~0 at the onset. PICK_HAND_ROT is then the strike orientation directly -- finger
+# axis (+y) along the (near-level) forearm with a slight 15 deg downward break (the natural
+# slight bend), and the -Z palm turned onto the strings. So the finger axis reads straight
+# and the pick still crosses the strings squarely, with only the gentle +/-swing breaking
+# the wrist a little between notes. Because the pick hangs off the PALM (not out along the
+# fingers), the hand can follow whatever forearm the relaxed elbow gives -- straightness no
+# longer needs a steep, elbow-raising forearm. MOUNT-COUPLED: redo this trio (and see
+# ANCHOR_WORLD / ELBOW_POLE_OVERRIDE) if the wear height or R elbow pole changes -- re-run
+# the solver in the round-19 notes (finger=forearm+6deg break, palm onto strings, blade so
+# the pick's head->tip is straight down => the swing argmin sits at the strike).
+PICK_HAND_ROT = mathutils.Euler((0.169015, 0.0, -0.877498), 'XYZ').to_matrix()
+# The pick is pinched between the THUMB PAD and the tip/side of the INDEX. It sits close
+# under the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather
+# than out along the fingertips -- that is what lets the pick be short while still hanging
+# down far enough for a straight wrist to reach the strings. The hand is a RIGHT hand
+# (palm -z, fingers +y), so the thumb/index/pick live at NEGATIVE local x. The pinch is
+# placed at the INDEX knuckle's x (-0.030) -- not midway to the middle -- so the pick is
+# held at the index, with the middle/ring/pinky folded clear behind it (they sit ~+x of
+# here). Moving the pinch laterally in x does NOT disturb the strike: animate_hands
+# (objloc) re-places the whole hand each note so the pick TIP still lands on the target
+# string at the same depth, and the wrist orientation (PICK_HAND_ROT) / blade direction
+# (PICK_TIP_LOCAL - PICK_PINCH) are both unchanged -- only the internal x offset moved.
+PICK_PINCH = (-0.028, 0.010, -0.035)
+# PICK_MESH_ROT / PICK_TIP_LOCAL aim the pick BLADE so that, in the mounted pose, it lies
+# in the across-string / depth plane and CROSSES the strings at ~90 deg (instead of
+# raking nearly ALONG them) while still hanging down far enough to strike. Because the
+# pluck swing is a wrist rotation about the string axis, a blade with no along-string
+# component stays ~perpendicular to the strings through the whole stroke. Recipe: choose
+# the world-flat blade direction w ~ (0.6, 0, -0.8) (zero along-string y => 90 deg; the
+# -z dips it to the strings), d_local = PICK_HAND_ROT^-1 @ w, then
+# PICK_TIP_LOCAL = PICK_PINCH + d_local * pick_len  and  PICK_MESH_ROT = the track-quat
+# rotation from the pick mesh's built -z axis to d_local.
+# Here the blade is aimed straight DOWN off the palm (its head->tip vector, in the flat
+# frame, points along -Z perpendicular to the swing axis) so the dip-bottom coincides with
+# the straight object pose -- that is the whole trick that lets the played wrist be
+# straight. ~35 mm, just the tip past the fist; still crosses the strings ~square (no along-
+# string rake) because the swing pivots about the string axis and the blade has no along-
+# string component.
+# Pitch trimmed 2026-08-10: the blade was re-aimed ~8 deg lower in the MOUNTED world
+# frame (its head->tip elevation ~30 deg -> ~22 deg above horizontal) so the pick no
+# longer juts up so steeply out of the fist -- it reads as held closer to the strings.
+# The re-aim is a small pitch-down about the world across-string axis (heading kept), so
+# the blade still crosses the strings square; because the new head->tip sits even closer
+# to the swing's down axis, phi_bot stays ~0 (still -2 -> +0.5 deg) and the strike is
+# undisturbed (objloc re-places the whole hand so the tip still lands on target).
+# Re-derive both from a target world elevation: d_local = R_mount^-1 @ (heading*cos e +
+# z*sin e), PICK_TIP_LOCAL = PICK_PINCH + d_local*pick_len, PICK_MESH_ROT =
+# Vector((0,0,-1)).rotation_difference(d_local) (the mesh's built -z axis onto the blade).
+PICK_MESH_ROT = (-0.991656, 0.099468, -0.053833)
+PICK_TIP_LOCAL = (-0.031974, -0.023327, -0.056794)
 
 
 def pick_world_offset(v):
     """Armature-local offset -> world offset under the PickHand pose."""
     return tuple(PICK_HAND_ROT @ mathutils.Vector(v))
+
+
+def _curled_finger(knuckle, lengths, flex_deg):
+    """Points knuckle -> PIP -> DIP -> tip for a finger curling toward the
+    palm (local -z). Each phalanx adds its flexion about the knuckle-parallel
+    local x axis (curl is negative x in this rig's finger frame, cf.
+    FINGER_ROT_LIMIT), and the angle is CUMULATIVE, so a big enough total
+    folds the fingertip back into the fist."""
+    pts = [mathutils.Vector(knuckle)]
+    cum = 0.0
+    for length, flex in zip(lengths, flex_deg):
+        cum += flex
+        d = (mathutils.Matrix.Rotation(math.radians(-cum), 3, 'X')
+             @ mathutils.Vector((0.0, 1.0, 0.0)))
+        pts.append(pts[-1] + d * length)
+    return pts
+
+
+# The picking fist's four fingers are FULL three-phalanx fingers -- the SAME
+# phalanx lengths as the fretting hand (FRET_FINGERS), so the two hands read as
+# a matched pair -- curled into a relaxed fist rather than left as stubs. The
+# thumb and the INDEX pinch the pick: the index curls until its tip meets the pinch
+# (see PICK_PINCH, now at the index's own x), holding the pick at the index fingertip
+# against the thumb pad; the middle/ring/pinky fold in behind it (sitting clear, ~+x of
+# the pinch), each a touch tighter, for a natural cascade. Each entry is
+# (knuckle xyz, phalanx lengths, per-joint flexion MCP/PIP/DIP in degrees).
+# The MCP flexion is kept moderate (the long proximal is what dives deepest) and
+# the PIP/DIP tuck the tip back UP into the palm, so the whole fist stays compact
+# and its lowest point clears the string plane (~the pick tip's depth) instead of
+# punching through the strings -- the same clearance concern the short stubs had.
+# The index is curled MORE at the MCP than the others (70 vs ~52) precisely so its
+# fingertip reaches DOWN to the index-side pinch rather than staying extended past it.
+PICK_FIST = {
+    "index":  ((-0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (70, 70, 50)),
+    "middle": ((-0.010, 0.037, 0.021), FRET_FINGERS[2]["lengths"], (52, 98, 62)),
+    "ring":   (( 0.010, 0.036, 0.020), FRET_FINGERS[3]["lengths"], (54, 100, 62)),
+    "pinky":  (( 0.028, 0.034, 0.019), FRET_FINGERS[4]["lengths"], (56, 102, 60)),
+}
 
 
 def build_pick_hand(coll, mat):
@@ -370,25 +598,29 @@ def build_pick_hand(coll, mat):
 
     _bone_box(arm_obj, coll, mat, "wrist", (0.070, 0.066, 0.032),
               (0.0, 0.008 - 0.030, 0.013))
-    knuckles = {
-        "index": (0.028, 1.00), "middle": (0.010, 1.08),
-        "ring": (-0.010, 1.00), "pinky": (-0.029, 0.86),
-    }
-    for kx, scale in knuckles.values():
-        knuckle = mathutils.Vector((kx, 0.042, 0.006))
-        mid = knuckle + mathutils.Vector((0.0, 0.012 * scale, -0.026 * scale))
-        tip = mid + mathutils.Vector((0.0, -0.024 * scale, 0.008 * scale))
-        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, knuckle, mid)
-        _seg_box(arm_obj, coll, mat, FINGER_BOX_W, FINGER_BOX_H, mid, tip)
+    # Finger chains as static boxes (RIGHT hand: thumb/index on the -x side,
+    # pinky on +x). Full three-phalanx fingers (matching the fretting hand)
+    # curled into a relaxed fist around the pick -- see PICK_FIST.
+    for name, (knuckle, lengths, flex) in PICK_FIST.items():
+        pts = _curled_finger(knuckle, lengths, flex)
+        for seg, (a, b) in zip(("prox", "mid", "dist"),
+                               zip(pts[:-1], pts[1:])):
+            w, h = _finger_cross(name, seg)
+            _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
-    thumb_base = (0.032, 0.004, 0.010)
-    thumb_knuckle = (0.028, 0.030, -0.002)
+    # Thumb lies along the thumb (-x) edge and curls down toward the PALM (-z), its pad
+    # pressing on the pick so the pick is pinched between the thumb and the index fingertip.
+    # The pinch now sits at the index (further -x, see PICK_PINCH), so the thumb base rolls
+    # a touch further out along the -x edge and its pad meets the pick there.
+    thumb_base = (-0.042, 0.002, -0.006)
+    thumb_knuckle = (-0.037, 0.015, -0.022)
     _seg_box(arm_obj, coll, mat, 0.017, 0.016, thumb_base, thumb_knuckle)
     _seg_box(arm_obj, coll, mat, 0.016, 0.015, thumb_knuckle, PICK_PINCH)
 
-    length = PICK_PINCH[2] - PICK_TIP_LOCAL[2]
+    length = (mathutils.Vector(PICK_PINCH) - mathutils.Vector(PICK_TIP_LOCAL)).length
     _bone_box(arm_obj, coll, _pick_material(), "wrist", None,
               (PICK_PINCH[0], PICK_PINCH[1] - 0.030, PICK_PINCH[2]),
+              rotation=PICK_MESH_ROT,
               mesh=_make_pick_mesh("PickMesh", length))
     return arm_obj
 
