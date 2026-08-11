@@ -498,9 +498,9 @@ def _make_pick_mesh(name, length):
 # fingers), the hand can follow whatever forearm the relaxed elbow gives -- straightness no
 # longer needs a steep, elbow-raising forearm. MOUNT-COUPLED: redo this trio (and see
 # ANCHOR_WORLD / ELBOW_POLE_OVERRIDE) if the wear height or R elbow pole changes -- re-run
-# the solver in the round-19 notes (finger=forearm+15deg break, palm onto strings, blade so
+# the solver in the round-19 notes (finger=forearm+6deg break, palm onto strings, blade so
 # the pick's head->tip is straight down => the swing argmin sits at the strike).
-PICK_HAND_ROT = mathutils.Euler((0.294463, 0.0, -0.832313), 'XYZ').to_matrix()
+PICK_HAND_ROT = mathutils.Euler((0.169015, 0.0, -0.877498), 'XYZ').to_matrix()
 # The pick is pinched between the THUMB PAD and the side of the INDEX. It sits close under
 # the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather than
 # out along the fingertips -- that is what lets the pick be short while still hanging down
@@ -522,8 +522,8 @@ PICK_PINCH = (-0.015, 0.010, -0.035)
 # straight. ~35 mm, just the tip past the fist; still crosses the strings ~square (no along-
 # string rake) because the swing pivots about the string axis and the blade has no along-
 # string component.
-PICK_MESH_ROT = (-1.180094, 0.293406, -0.197252)
-PICK_TIP_LOCAL = (-0.026860, -0.026297, -0.049950)
+PICK_MESH_ROT = (-1.035388, 0.273854, -0.156622)
+PICK_TIP_LOCAL = (-0.025823, -0.023136, -0.054656)
 
 
 def pick_world_offset(v):
