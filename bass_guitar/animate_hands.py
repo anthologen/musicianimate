@@ -340,10 +340,10 @@ PICK_DEVIATE = 0.5
 # PICK_ULNAR is what actually adds radial/ulnar DEVIATION: it tilts the swing axis toward
 # the hand's palm-normal (the true deviation axis), so the wrist rocks a little
 # side-to-side within the palm plane as it dips -- the small flexion+deviation coupling of
-# real wrist picking -- instead of pure flexion/extension. Kept small: +0.26 gives a ~0.18
-# deviation component (vs ~0.9 flexion) and a ~7 mm along-string arc, still well inside the
-# string spacing. 0 = the old pure flex/extend rock.
-PICK_ULNAR = 0.26
+# real wrist picking -- instead of pure flexion/extension. Kept a minority component:
+# +0.40 gives a ~0.33 deviation component (vs ~0.87 flexion) and a ~8 mm along-string arc,
+# still inside the 18 mm string spacing. 0 = the old pure flex/extend rock.
+PICK_ULNAR = 0.40
 ACCENT_VEL = 100        # a note this loud after a rest restarts on a downstroke
 GAP_RESET = 0.35        # ...if the rest before it is at least this long (s)
 STRIKE_SLOW = 0.12
