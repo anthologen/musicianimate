@@ -320,19 +320,30 @@ HAND_ARRIVE = 0.12     # seconds the hand slides to a new string before onset
 # picked, not strummed, so the swing is DAMPENED and stays close to the
 # strings, and loudness drives the STRIKE SPEED (how fast the wrist dips onto
 # the string) rather than how far it reaches.
-PICK_SWING = 0.38      # half-swing of the wrist pendulum (rad): the pick clears
-                       # the strings by ~2 mm at the top of the swing and its
-                       # travel stays INSIDE the 18 mm string spacing, so it ticks
-                       # one string without raking its neighbours.
+PICK_SWING = 0.30      # half-swing of the wrist pendulum (rad ~= 17 deg): kept
+                       # SMALL so the stroke reads relaxed, not tiring. The pick
+                       # still clears the strings by ~1 mm at the top of the swing
+                       # and its travel stays INSIDE the 18 mm string spacing, so it
+                       # ticks one string without raking its neighbours.
 PICK_DEPTH = 0.0018    # tip dip below the string centre at the bottom of the stroke
 PICK_FOLLOW_FRAC = 0.6  # how far the wrist swings out after the final note
-# The bare neck-axis swing rolls the palm (pronation/supination) as much as it rocks the
-# wrist. PICK_DEVIATE tilts the swing axis OFF the forearm/finger axis (which is the part
-# that rolls the palm) toward pure ulnar/radial DEVIATION, so the wrist rocks side-to-side
-# and the palm holds a steadier down-facing angle -- classic wrist picking. 0 = the old
-# pure neck-axis swing (palm rolls, no along-string drift); 1 = no palm roll but the pick
-# arcs far along its own string. 0.5 halves the roll for a ~20 mm along-string arc.
+# The pick stroke rotates the wrist about a single swing axis. Two dials shape WHICH
+# anatomical wrist motions that axis blends (measured against the posed hand's own
+# forearm / across / palm-normal axes):
+#
+# PICK_DEVIATE trims the swing axis's FINGER-axis (forearm) component -- the part that
+# pronates/supinates the palm -- so the palm holds a steadier down-facing angle. 0 = the
+# bare neck-axis swing (palm rolls with every stroke); 1 = no palm roll. It does NOT add
+# radial/ulnar deviation: the neck axis's projection into the wrist-bend plane is almost
+# pure flexion/extension, so trimming the roll only makes the bend flex/extend harder.
 PICK_DEVIATE = 0.5
+# PICK_ULNAR is what actually adds radial/ulnar DEVIATION: it tilts the swing axis toward
+# the hand's palm-normal (the true deviation axis), so the wrist rocks a little
+# side-to-side within the palm plane as it dips -- the small flexion+deviation coupling of
+# real wrist picking -- instead of pure flexion/extension. Kept small: +0.26 gives a ~0.18
+# deviation component (vs ~0.9 flexion) and a ~7 mm along-string arc, still well inside the
+# string spacing. 0 = the old pure flex/extend rock.
+PICK_ULNAR = 0.26
 ACCENT_VEL = 100        # a note this loud after a rest restarts on a downstroke
 GAP_RESET = 0.35        # ...if the rest before it is at least this long (s)
 STRIKE_SLOW = 0.12
@@ -1158,9 +1169,13 @@ def _pick_swing_rig():
     head_off = PICK_HAND_ROT @ head_local
     uw = PICK_HAND_ROT @ (mathutils.Vector(PICK_TIP_LOCAL) - head_local)
     # Swing axis = neck axis (Y) with PICK_DEVIATE of its FINGER-axis component
-    # removed (that component is what rolls the palm), tilting toward deviation.
+    # removed (that component is what rolls the palm), PLUS a PICK_ULNAR tilt toward
+    # the hand's palm-normal -- the true radial/ulnar deviation axis -- so the rock
+    # is a small flexion+deviation blend rather than pure flexion/extension.
     finger = (PICK_HAND_ROT @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
-    a = (mathutils.Vector((0.0, 1.0, 0.0)) - PICK_DEVIATE * finger.y * finger)
+    palm_normal = (PICK_HAND_ROT @ mathutils.Vector((0.0, 0.0, 1.0))).normalized()
+    a = (mathutils.Vector((0.0, 1.0, 0.0)) - PICK_DEVIATE * finger.y * finger
+         + PICK_ULNAR * palm_normal)
     a.normalize()
     # phi_bot = wrist angle putting the tip DEEPEST (min flat z = through the strings).
     phi_bot = min((i * math.tau / 720.0 for i in range(720)),
