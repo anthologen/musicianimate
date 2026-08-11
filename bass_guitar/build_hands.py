@@ -501,12 +501,18 @@ def _make_pick_mesh(name, length):
 # the solver in the round-19 notes (finger=forearm+6deg break, palm onto strings, blade so
 # the pick's head->tip is straight down => the swing argmin sits at the strike).
 PICK_HAND_ROT = mathutils.Euler((0.169015, 0.0, -0.877498), 'XYZ').to_matrix()
-# The pick is pinched between the THUMB PAD and the side of the INDEX. It sits close under
-# the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather than
-# out along the fingertips -- that is what lets the pick be short while still hanging down
-# far enough for a straight wrist to reach the strings. The hand is a RIGHT hand (palm -z,
-# fingers +y), so the thumb/index/pick live at NEGATIVE local x.
-PICK_PINCH = (-0.015, 0.010, -0.035)
+# The pick is pinched between the THUMB PAD and the tip/side of the INDEX. It sits close
+# under the wrist on the PALM (-z) side and protrudes DOWNWARD toward the strings, rather
+# than out along the fingertips -- that is what lets the pick be short while still hanging
+# down far enough for a straight wrist to reach the strings. The hand is a RIGHT hand
+# (palm -z, fingers +y), so the thumb/index/pick live at NEGATIVE local x. The pinch is
+# placed at the INDEX knuckle's x (-0.030) -- not midway to the middle -- so the pick is
+# held at the index, with the middle/ring/pinky folded clear behind it (they sit ~+x of
+# here). Moving the pinch laterally in x does NOT disturb the strike: animate_hands
+# (objloc) re-places the whole hand each note so the pick TIP still lands on the target
+# string at the same depth, and the wrist orientation (PICK_HAND_ROT) / blade direction
+# (PICK_TIP_LOCAL - PICK_PINCH) are both unchanged -- only the internal x offset moved.
+PICK_PINCH = (-0.028, 0.010, -0.035)
 # PICK_MESH_ROT / PICK_TIP_LOCAL aim the pick BLADE so that, in the mounted pose, it lies
 # in the across-string / depth plane and CROSSES the strings at ~90 deg (instead of
 # raking nearly ALONG them) while still hanging down far enough to strike. Because the
@@ -523,7 +529,10 @@ PICK_PINCH = (-0.015, 0.010, -0.035)
 # string rake) because the swing pivots about the string axis and the blade has no along-
 # string component.
 PICK_MESH_ROT = (-1.035388, 0.273854, -0.156622)
-PICK_TIP_LOCAL = (-0.025823, -0.023136, -0.054656)
+# Shifted by the SAME -0.013 in x as PICK_PINCH (index-side move) so the blade vector
+# (PICK_TIP_LOCAL - PICK_PINCH) -- hence PICK_MESH_ROT, the strike depth and phi_bot --
+# is byte-for-byte unchanged; the pick just rides at the index instead of mid-palm.
+PICK_TIP_LOCAL = (-0.038823, -0.023136, -0.054656)
 
 
 def pick_world_offset(v):
@@ -550,16 +559,19 @@ def _curled_finger(knuckle, lengths, flex_deg):
 # The picking fist's four fingers are FULL three-phalanx fingers -- the SAME
 # phalanx lengths as the fretting hand (FRET_FINGERS), so the two hands read as
 # a matched pair -- curled into a relaxed fist rather than left as stubs. The
-# thumb and a loosely-curled index pinch the pick (the index flexes least, so it
-# lies alongside the pick edge); the middle/ring/pinky fold in behind it, each a
-# touch tighter, for a natural cascade. Each entry is
+# thumb and the INDEX pinch the pick: the index curls until its tip meets the pinch
+# (see PICK_PINCH, now at the index's own x), holding the pick at the index fingertip
+# against the thumb pad; the middle/ring/pinky fold in behind it (sitting clear, ~+x of
+# the pinch), each a touch tighter, for a natural cascade. Each entry is
 # (knuckle xyz, phalanx lengths, per-joint flexion MCP/PIP/DIP in degrees).
 # The MCP flexion is kept moderate (the long proximal is what dives deepest) and
 # the PIP/DIP tuck the tip back UP into the palm, so the whole fist stays compact
 # and its lowest point clears the string plane (~the pick tip's depth) instead of
 # punching through the strings -- the same clearance concern the short stubs had.
+# The index is curled MORE at the MCP than the others (70 vs ~52) precisely so its
+# fingertip reaches DOWN to the index-side pinch rather than staying extended past it.
 PICK_FIST = {
-    "index":  ((-0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (40, 66, 50)),
+    "index":  ((-0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (70, 70, 50)),
     "middle": ((-0.010, 0.037, 0.021), FRET_FINGERS[2]["lengths"], (52, 98, 62)),
     "ring":   (( 0.010, 0.036, 0.020), FRET_FINGERS[3]["lengths"], (54, 100, 62)),
     "pinky":  (( 0.028, 0.034, 0.019), FRET_FINGERS[4]["lengths"], (56, 102, 60)),
@@ -590,11 +602,11 @@ def build_pick_hand(coll, mat):
             _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
     # Thumb lies along the thumb (-x) edge and curls down toward the PALM (-z), its pad
-    # pressing on the pick so the pick is pinched between the thumb and the index's side.
-    # The pinch now sits low on the palm (see PICK_PINCH), so the thumb rolls under to meet
-    # it there instead of reaching out along the fingertips.
-    thumb_base = (-0.032, 0.004, -0.004)
-    thumb_knuckle = (-0.028, 0.016, -0.024)
+    # pressing on the pick so the pick is pinched between the thumb and the index fingertip.
+    # The pinch now sits at the index (further -x, see PICK_PINCH), so the thumb base rolls
+    # a touch further out along the -x edge and its pad meets the pick there.
+    thumb_base = (-0.042, 0.002, -0.006)
+    thumb_knuckle = (-0.037, 0.015, -0.022)
     _seg_box(arm_obj, coll, mat, 0.017, 0.016, thumb_base, thumb_knuckle)
     _seg_box(arm_obj, coll, mat, 0.016, 0.015, thumb_knuckle, PICK_PINCH)
 
