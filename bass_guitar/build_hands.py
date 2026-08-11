@@ -528,11 +528,18 @@ PICK_PINCH = (-0.028, 0.010, -0.035)
 # straight. ~35 mm, just the tip past the fist; still crosses the strings ~square (no along-
 # string rake) because the swing pivots about the string axis and the blade has no along-
 # string component.
-PICK_MESH_ROT = (-1.035388, 0.273854, -0.156622)
-# Shifted by the SAME -0.013 in x as PICK_PINCH (index-side move) so the blade vector
-# (PICK_TIP_LOCAL - PICK_PINCH) -- hence PICK_MESH_ROT, the strike depth and phi_bot --
-# is byte-for-byte unchanged; the pick just rides at the index instead of mid-palm.
-PICK_TIP_LOCAL = (-0.038823, -0.023136, -0.054656)
+# Pitch trimmed 2026-08-10: the blade was re-aimed ~8 deg lower in the MOUNTED world
+# frame (its head->tip elevation ~30 deg -> ~22 deg above horizontal) so the pick no
+# longer juts up so steeply out of the fist -- it reads as held closer to the strings.
+# The re-aim is a small pitch-down about the world across-string axis (heading kept), so
+# the blade still crosses the strings square; because the new head->tip sits even closer
+# to the swing's down axis, phi_bot stays ~0 (still -2 -> +0.5 deg) and the strike is
+# undisturbed (objloc re-places the whole hand so the tip still lands on target).
+# Re-derive both from a target world elevation: d_local = R_mount^-1 @ (heading*cos e +
+# z*sin e), PICK_TIP_LOCAL = PICK_PINCH + d_local*pick_len, PICK_MESH_ROT =
+# Vector((0,0,-1)).rotation_difference(d_local) (the mesh's built -z axis onto the blade).
+PICK_MESH_ROT = (-0.991656, 0.099468, -0.053833)
+PICK_TIP_LOCAL = (-0.031974, -0.023327, -0.056794)
 
 
 def pick_world_offset(v):
