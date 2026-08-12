@@ -138,6 +138,19 @@ COUPLE_BONE = "spine"
 STRAP_WIDTH = 0.05
 STRAP_THICK = 0.008
 
+# --- Wrist range-of-motion guard --------------------------------------------
+# The playing hands are SEPARATE armatures whose world orientation is AUTHORED
+# (build_hands' PICK_ROT / fret wrap), not solved by a limited joint -- so unlike
+# the body's caged shoulders/elbows (build_guitarist), a bad hand orientation
+# slips past every IK limit. _check_wrist_pose closes that gap: after the arms are
+# wired it validates each wrist against human ROM, so an over-bent or palm-flipped
+# re-solve fails loudly at build time instead of shipping a broken wrist.
+WRIST_BEND_MAX = math.radians(90.0)   # max angle the hand's long axis may sit off the
+#                                       forearm -- the combined flexion(~80)+deviation(~30)
+#                                       envelope (a neck-wrapping fret hand rides near it)
+PALM_TO_STRINGS_MIN = 0.20            # the picking palm must face the STRINGS (into the
+#                                       guitar face), never out toward the audience
+
 
 def _play_transform():
     """4x4 world matrix that carries the flat guitar frame into playing pose."""
@@ -246,6 +259,73 @@ def _wire_arms():
         if stub is not None:
             stub.hide_viewport = True
             stub.hide_render = True
+
+
+def _check_wrist_pose(arm, frames):
+    """Validate each playing wrist against human range of motion, sampled over
+    `frames` (so the strum extremes are covered too). The hand rigs are oriented
+    by AUTHORED matrices, not by a limited joint, so this is the only thing
+    standing between a bad build_hands re-solve and a broken wrist. Raises
+    RuntimeError -- loud at build time -- on:
+      * a wrist bent more than WRIST_BEND_MAX off the incoming forearm, or
+      * a PICKING palm that faces AWAY from the strings (out toward the
+        audience) instead of onto them.
+    The fret hand's palm direction is left free (it wraps the neck); only its
+    bend is capped."""
+    scene = bpy.context.scene
+    holder = bpy.data.objects.get(HOLDER_NAME)
+    pairs = {"L": "FretHand", "R": "PickHand"}
+    saved = scene.frame_current
+    worst_bend = {}   # side -> max wrist bend (rad), on the base finger axis
+    worst_face = {}   # side -> min palm.into_face, on the POSED palm
+    for f in frames:
+        scene.frame_set(int(round(f)))
+        bpy.context.view_layer.update()
+        # Strings sit on the guitar face; its inward normal is where a picking
+        # palm must point. Holder local +Z is OUT of the face, so -Z points into
+        # it. Re-read per frame: the holder rides the swaying torso bone.
+        into_face = None
+        if holder is not None:
+            into_face = (holder.matrix_world.to_quaternion().to_matrix()
+                         @ V((0.0, 0.0, -1.0))).normalized()
+        for side, hand_name in pairs.items():
+            fore = arm.pose.bones.get(f"forearm.{side}")
+            hand = bpy.data.objects.get(hand_name)
+            if fore is None or hand is None:
+                continue
+            e = (arm.matrix_world @ fore.tail
+                 - arm.matrix_world @ fore.head).normalized()
+            # BEND = wrist straightness: forearm vs the hand's finger axis
+            # (object +Y).
+            finger = (hand.matrix_world.to_3x3() @ V((0.0, 1.0, 0.0))).normalized()
+            bend = e.angle(finger)
+            if side not in worst_bend or bend > worst_bend[side]:
+                worst_bend[side] = bend
+            # PALM facing is read on the POSED wrist bone (obj @ pose), so any
+            # future wrist-driven stroke is covered too. PALM is the hand's local
+            # -Z (fingers curl toward -z, the pick is pinched there); +Z is the
+            # back of the hand.
+            wb = hand.pose.bones.get("wrist")
+            Rp = ((hand.matrix_world @ wb.matrix).to_3x3() if wb is not None
+                  else hand.matrix_world.to_3x3())
+            face = ((Rp @ V((0.0, 0.0, -1.0))).normalized().dot(into_face)
+                    if into_face is not None else 1.0)
+            if side not in worst_face or face < worst_face[side]:
+                worst_face[side] = face
+    scene.frame_set(saved)
+    for side, hand_name in pairs.items():
+        if worst_bend.get(side, 0.0) > WRIST_BEND_MAX:
+            raise RuntimeError(
+                f"{hand_name} wrist is bent {math.degrees(worst_bend[side]):.0f} deg "
+                f"off the forearm (human max ~{math.degrees(WRIST_BEND_MAX):.0f}); the "
+                f"hand orientation in build_hands is anatomically impossible -- re-solve.")
+        if side == "R" and worst_face.get(side, 1.0) < PALM_TO_STRINGS_MIN:
+            raise RuntimeError(
+                f"{hand_name} palm faces AWAY from the strings (posed palm.into-face="
+                f"{worst_face[side]:+.2f}, need >= {PALM_TO_STRINGS_MIN}); the picking "
+                f"wrist is rotated the wrong way -- fix PICK_PITCH / PICK_YAW in "
+                f"build_hands so the palm turns onto the strings.")
+    return {side: math.degrees(worst_bend.get(side, 0.0)) for side in pairs}
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +543,12 @@ def animate_guitarist(fingering_json=None, fps=24, frame_start=1, build=True,
     duration = max((n["end"] for n in notes), default=0.0)
     _animate_body(arm, duration, fps, frame_start)
 
+    # 6. Both wrists must be humanly posed -- checked on the finished, mounted
+    #    rig (the hands' orientation is authored, so nothing else catches it).
+    bend = _check_wrist_pose(
+        arm, range(frame_start, hand_result["frame_end"] + 1,
+                   max(1, int(round(fps / 6)))))
+
     if camera:
         _setup_camera(scene)
 
@@ -471,6 +557,7 @@ def animate_guitarist(fingering_json=None, fps=24, frame_start=1, build=True,
     scene.frame_set(frame_start)
 
     return {"guitarist": arm.name, "frame_end": scene.frame_end, "fps": fps,
+            "wrist_bend_deg": {k: round(v, 1) for k, v in bend.items()},
             **hand_result}
 
 
