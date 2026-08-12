@@ -44,7 +44,7 @@ Blender (Scripting tab, Text Editor "Run Script", `blender --background
 | `build_guitar.py` | Builds a realistically sized 25.5" solid-body electric (slab body, tapered neck, 22 frets, six strings, two humbuckers, bridge, inline tuners) into a `Guitar` collection. Lies face-up (+Z), neck pointing +Y. Self-contained (bmesh/mathutils only). |
 | `build_hands.py` | Builds the `FretHand` (wrist + four three-bone finger chains, wrapped around the neck with a static jointed thumb behind it) and `PickHand` (a loose fist of full curled fingers pinching a flat pick) armatures into a `GuitarHands` collection. Both are a realistic, matched hand size; every phalanx takes its cross-section from hand anthropometry and is caged to its human range of motion. Run after `build_guitar.py`. |
 | `fingering.py` | The tab/fingering solver — beam-searched Viterbi DP over feasible `(string, fret, finger)` grips (incl. index barres), picking the cheapest ergonomic path and emitting `fingering.json`. Mirrors `piano/fingering.py`. Also decides right-hand pick direction (down/up) from beat position. |
-| `animate_hands.py` | Keyframes the two hand rigs from `fingering.json`: the FretHand glides the neck and arches fingers over their frets (closed-form two-link IK, within anatomical joint limits, with idle fingers held in a relaxed arch over the strings and every transition eased and anticipated); the PickHand sweeps the pick tip across the strings — a tight flick for 1–3 strings (PICK), a big velocity-scaled arc for 4+ (STRUM). |
+| `animate_hands.py` | Keyframes the two hand rigs from `fingering.json`: the FretHand glides the neck and arches fingers over their frets (closed-form two-link IK, within anatomical joint limits, with idle fingers held in a relaxed arch over the strings and every transition eased and anticipated); the PickHand sweeps the pick tip across the strings — a tight flick for 1–3 strings (PICK), a big velocity-scaled arc for 4+ (STRUM), each carried partly by a radial/ulnar rock of the wrist. |
 | `build_guitarist.py` | Builds a blocky, faceless, walk-capable humanoid `Guitarist` armature (IK arms + legs, human ROM limits on every joint, a `hand.*` stub at each wrist as the attach point for the hand rigs). Same axis convention as the drummer stand-in. |
 | `animate_guitarist.py` | Stitches it all together: rebuilds guitar + hands + guitarist, runs `animate_hands`, then rigidly mounts the "guitar + playing hands" assembly onto the standing player's torso, straps it on, makes the arms' IK follow the hands, adds a gentle body sway, and validates both wrists against human ROM (`_check_wrist_pose`). The end-to-end shot. |
 | `make_demo_guitar_midi.py` | Generates `guitar_demo.mid` — a fingering test bench: C-major scale, chromatic run, open chords (C/Am/E), barre chords (F/Bm), a high position shift, plus a five-note cluster and an out-of-range note to exercise the solver's fallbacks. |
@@ -92,10 +92,15 @@ animate_guitarist.animate_guitarist("guitar/fingering.json")
   fingers, like a real grip. Finger chains use the piano rig's convention
   (pose-space x-rotation = curl, z-rotation = sideways reach), so it shares the
   piano's closed-form IK.
-- The `PickHand` is driven purely by object location: the animator sweeps the
-  pick tip (at `PICK_TIP_LOCAL`) across the strings; the fingers/pick are rigid.
-  Its orientation (`PICK_ROT`) is **mount-solved** against the standing
-  guitarist's picking forearm so the wrist reads straight — see below.
+- The `PickHand` is driven by object location plus a small wrist rock: the
+  animator sweeps the pick tip (at `PICK_TIP_LOCAL`) across the strings; the
+  fingers/pick are rigid. Its base orientation (`PICK_ROT`) is **mount-solved**
+  against the standing guitarist's picking forearm so the wrist reads straight
+  — see below — and each stroke rotates the rig off it about the palm normal
+  (`PICK_ULNAR` / `STRUM_ULNAR`), radial on the backswing through ulnar on the
+  follow-through, so part of the crossing comes from the wrist deviating rather
+  than the whole arm sliding. The tip is pinned to the same contacts either
+  way: the rig's location is solved around whatever the rock angle is.
   It is a **right** hand: fingers +y, palm −z, and therefore thumb, index and
   pick all on the **−x** side (`PICK_THUMB_AXIS`), the same convention as
   `bass_guitar/build_hands.py`. Mounted, local +x points nearly straight down,
@@ -151,6 +156,17 @@ player reads as a player rather than as sticks pointed at the right places.
   the mounted picking forearm (finger axis along the forearm, palm onto the
   strings), which took the picking wrist from 51–93° bent — past the guard — to
   under 20°.
+- **Radial/ulnar deviation.** `PICK_ROT` is the *base* pose only. A rigid hand
+  slid across the strings reads as dragged, so each stroke also rocks the rig
+  about its palm normal — the true deviation axis, as opposed to the knuckle
+  axis (flexion) or the finger axis (forearm roll) — radial at the backswing,
+  through neutral at the contact, to ulnar on the follow-through, sized by
+  velocity (`PICK_ULNAR` / `STRUM_ULNAR`, ~7–9° half-swing). The pick tip is
+  still pinned to exactly the same contacts: the rig's location is solved
+  around the rock, so it *replaces* part of the slide rather than adding to it
+  (on `guitar_demo`, 12% of the crossing comes from the wrist, and 95% of the
+  hand's own rotation over the take is deviation). Because the wrist carries
+  its share, the arm swings less: peak picking-wrist bend fell 19.9° → 15.2°.
 - **Handedness.** Bend and palm-facing are both blind to *chirality*: a mirrored
   picking fist still runs its fingers along the forearm with its palm on the
   strings, so it passes both and simply plays upside down. `_check_wrist_pose`

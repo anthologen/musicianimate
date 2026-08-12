@@ -48,8 +48,9 @@ import mathutils
 
 try:
     from . import fret_layout
-    from .build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_TIP_LOCAL,
-                              WRAP_TILT, _finger_cross, pick_world_offset)
+    from .build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_ROT,
+                              PICK_TIP_LOCAL, WRAP_TILT, _finger_cross,
+                              pick_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger)
@@ -59,8 +60,9 @@ except ImportError:  # loaded as a loose script via importlib
     sys.path.append(_HERE)
     sys.path.append(os.path.dirname(_HERE))
     import fret_layout
-    from build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_TIP_LOCAL,
-                             WRAP_TILT, _finger_cross, pick_world_offset)
+    from build_hands import (FRET_FINGERS, HAND_ROT_Z, PICK_ROT,
+                             PICK_TIP_LOCAL, WRAP_TILT, _finger_cross,
+                             pick_world_offset)
     from piano.piano_midi_animator import _iter_action_fcurves
     from piano.animate_hands import (_finger_ik, _smooth_targets,
                                      _group_events, _pose_finger)
@@ -386,6 +388,33 @@ STRUM_LEAD_LOUD = 0.075    # loud strum: wide arm sweep in
 STRUM_FOLLOW_SOFT = 0.010  # quiet strum: little follow-through
 STRUM_FOLLOW_LOUD = 0.060  # loud strum: long follow-through past the last string
 STRUM_TIME = 0.05      # seconds a chord strum spans around the onset
+
+# --- picking-wrist radial/ulnar deviation ----------------------------------
+# The stroke above is authored as pure TRANSLATION of the PickHand rig: the hand
+# used to slide across the strings at a fixed, solved orientation (PICK_ROT), so
+# the wrist never moved relative to the forearm. Real picking is not a shoulder
+# slide -- a sizeable part of the stroke is the wrist rocking in the plane of the
+# palm, toward the thumb (RADIAL) on the backswing and toward the little finger
+# (ULNAR) through the follow-through. Adding a small rock of that kind is what
+# makes the hand read as picking rather than being dragged.
+#
+# The deviation axis is the PALM NORMAL (the hand rig's local -z, which PICK_ROT
+# turns onto the strings); rotating about it swings the fingers/pick sideways
+# WITHIN the palm plane, which is exactly radial/ulnar deviation -- as opposed to
+# the knuckle axis (flexion/extension) or the finger axis (forearm roll). NB the
+# bass rig's like-named PICK_ULNAR is a dimensionless tilt of its pendulum axis;
+# here the hand carries no swing bone, so this is the deviation angle itself.
+#
+# It is a COMPONENT of the stroke, not an addition to it: animate_pick_hand pins
+# the pick TIP to the same contact points as before and solves the rig's location
+# around whatever the deviation angle is, so the rock replaces part of the slide
+# instead of throwing the tip off the string. Half-amplitude is kept small -- at
+# 7 deg the tip sweeps ~3.4 mm to either side (the swing radius, wrist to pick
+# tip, is ~64 mm), a third or so of a single-note stroke's crossing distance, and
+# the wrist bend stays far inside the _check_wrist_pose envelope.
+PICK_ULNAR = math.radians(7.0)   # half-swing of the picked stroke's wrist rock
+STRUM_ULNAR = math.radians(9.0)  # ditto for a full strum (the arm still leads it)
+PICK_ULNAR_VEL = 0.5   # fraction of the half-swing that scales with velocity
 REVERSAL_GAP = 0.4     # up to this gap (s) between opposite strokes, the hand
                        # reverses at the shared apex instead of re-winding up:
                        # the prior stroke's follow-through already carried it to
@@ -1174,17 +1203,30 @@ def _pick_directions(events):
 def animate_pick_hand(arm_obj, notes, fps, frame_start):
     """Keyframe the picking hand's strokes. Returns the last frame."""
     arm_obj.animation_data_clear()
-    tip_off = pick_world_offset(PICK_TIP_LOCAL)
-    obj_y = fret_layout.PLUCK_Y - tip_off[1]
-    z_pluck = fret_layout.STRING_Z - PICK_DEPTH - tip_off[2]
+    arm_obj.rotation_euler = PICK_ROT.to_euler()
+    tip_off = mathutils.Vector(pick_world_offset(PICK_TIP_LOCAL))
+    # Deviation axis: the palm normal (hand-local -z), signed so that a POSITIVE
+    # angle carries the pick tip toward the treble side -- i.e. along a
+    # downstroke, so `dev` can be keyed straight off the stroke direction.
+    dev_axis = -mathutils.Vector(pick_world_offset((0.0, 0.0, 1.0)))
+    tip_y = fret_layout.PLUCK_Y
+    z_pluck = fret_layout.STRING_Z - PICK_DEPTH
 
-    def hover_z(lift):  # pick-tip clearance -> object z for a hover apex
-        return fret_layout.STRING_Z + lift - tip_off[2]
+    def hover_z(lift):  # pick-tip clearance -> tip z for a hover apex
+        return fret_layout.STRING_Z + lift
 
-    def key(t, tip_x, z):
-        arm_obj.location = (tip_x - tip_off[0], obj_y, z)
-        arm_obj.keyframe_insert(data_path="location",
-                                frame=frame_start + t * fps)
+    def key(t, tip_x, z, dev):
+        # Rock the wrist by `dev` about the palm normal, then solve the rig's
+        # location so the pick TIP still lands on the point the stroke asked
+        # for: the deviation takes over part of the crossing motion rather than
+        # displacing the contact.
+        rot = mathutils.Matrix.Rotation(dev, 3, dev_axis)
+        arm_obj.rotation_euler = (rot @ PICK_ROT).to_euler('XYZ',
+                                                          arm_obj.rotation_euler)
+        arm_obj.location = mathutils.Vector((tip_x, tip_y, z)) - rot @ tip_off
+        frame = frame_start + t * fps
+        arm_obj.keyframe_insert(data_path="location", frame=frame)
+        arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
     events = _group_events(notes)
     if not events:
@@ -1194,11 +1236,11 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
     min_dt = 0.75 / fps  # keep successive keyframes distinct
     last_t = None
 
-    def key_after(t, tip_x, z):
+    def key_after(t, tip_x, z, dev):
         nonlocal last_t
         if last_t is not None:
             t = max(t, last_t + min_dt)
-        key(t, tip_x, z)
+        key(t, tip_x, z, dev)
         last_t = t
         return t
 
@@ -1232,6 +1274,14 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
             z_hover = hover_z(PICK_HOVER)
             lead = PICK_LEAD_X * (0.6 + 1.3 * vel_norm)
             follow = PICK_FOLLOW_X * (0.6 + 0.8 * vel_norm)
+        # The wrist rock runs with the stroke: cocked RADIAL at the backswing
+        # apex, sweeping through neutral around the contact to ULNAR on the
+        # follow-through (mirrored for an upstroke). Its size tracks velocity
+        # the same way the stroke's does, so a hard note snaps the wrist and a
+        # quiet one barely rolls it.
+        ulnar = ((STRUM_ULNAR if strum else PICK_ULNAR)
+                 * (1.0 - PICK_ULNAR_VEL + PICK_ULNAR_VEL * vel_norm)
+                 * direction)
         strike = STRIKE_SLOW - vel_norm * (STRIKE_SLOW - STRIKE_FAST)
         # A wider strum drags across more strings, so let it span more time
         # (scaled by string count) instead of snapping through the set.
@@ -1248,11 +1298,13 @@ def animate_pick_hand(arm_obj, notes, fps, frame_start):
         if not (reversal and gap is not None and gap <= REVERSAL_GAP):
             windup = t - strike - (min(0.06, 0.4 * gap)
                                    if gap is not None else 0.06)
-            key_after(windup, first - direction * lead, z_hover)
-        key_after(t - 0.5 * strike, first - direction * lead * 0.4, z_pluck)
-        key_after(t + cross_lag, last + direction * follow * 0.5, z_pluck)
+            key_after(windup, first - direction * lead, z_hover, -ulnar)
+        key_after(t - 0.5 * strike, first - direction * lead * 0.4, z_pluck,
+                  -0.4 * ulnar)
+        key_after(t + cross_lag, last + direction * follow * 0.5, z_pluck,
+                  0.5 * ulnar)
         rise_t = key_after(t + cross_lag + 0.06,
-                           last + direction * follow, z_hover)
+                           last + direction * follow, z_hover, ulnar)
         last_frame = max(last_frame, frame_start + rise_t * fps)
         prev_t, prev_dir = t, direction
 
