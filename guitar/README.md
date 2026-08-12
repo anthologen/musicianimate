@@ -111,7 +111,11 @@ animate_guitarist.animate_guitarist("guitar/fingering.json")
   arms and legs are two-bone IK; the hand rigs bone-parent to the `hand.*`
   stubs so the arm IK carries them. In `animate_guitarist`, the guitar +
   hands ride one holder bone-parented to a torso bone, so the whole upper
-  assembly sways as one and the hands stay glued to the strings.
+  assembly sways as one and the hands stay glued to the strings. How the guitar
+  is *worn* is three constants on that holder: `NECK_ELEV` (neck up), `BODY_YAW`
+  (neck angled out toward the audience rather than lying flat across the chest,
+  as on the bassist) and `ANCHOR_WORLD` (wear height). All three feed the
+  mount-solved `PICK_ROT` — re-run its fixed point after touching any of them.
 
 ## Hand realism model
 

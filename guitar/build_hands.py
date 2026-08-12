@@ -114,8 +114,15 @@ def hand_world_offset(v):
 # and pitch together fully determine a direction; there is no roll freedom left in
 # this parametrization), the palm stays turned onto the strings at 0.95 and the
 # thumb keeps pointing up (world +Z component 0.94).
-PICK_PITCH = -0.3103   # tilt of the hand about its knuckle axis (solved)
-PICK_YAW = -0.9700     # turn of the hand across the strings (solved)
+#
+# RE-SOLVED 2026-08-11 again for animate_guitarist.BODY_YAW (the guitar yawed
+# -12 deg so the neck angles out toward the audience). Yawing the instrument turns
+# the string plane away from the picking forearm, so the un-re-solved hand folded
+# the wrist to 3.3-19.9 deg (mean 14.0) with the elbow tightening to 85 deg; the
+# fixed point brought the finger axis back onto the new forearm line: bend back to
+# 0.5-13.8 deg (mean 5.5), palm-into-strings 1.00, elbow 89-134 deg.
+PICK_PITCH = -0.0932   # tilt of the hand about its knuckle axis (solved)
+PICK_YAW = -0.9671     # turn of the hand across the strings (solved)
 
 PICK_ROT = (mathutils.Matrix.Rotation(PICK_YAW, 3, 'Z')
             @ mathutils.Matrix.Rotation(-PICK_PITCH, 3, 'X'))

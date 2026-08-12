@@ -170,6 +170,23 @@ PICK_THUMB_UP_MIN = 0.30              # picking thumb's world +Z component (up =
 #                                       right hand; negative = mirrored/upside down)
 
 
+# Yaw the whole guitar about the vertical axis so the NECK angles OUT, away from
+# the player's chest, instead of lying flat across it with the body and the neck in
+# the same plane as the torso front (which reads as the guitar being glued to the
+# player). A negative angle swings the neck (+X, player's left) forward toward the
+# audience (-Y) and the lower bout back toward the hip -- the standard worn-out-front
+# stance. Kept gentler than the bassist's -18: the guitar is strummed with a wider
+# arm sweep, and every degree of yaw turns the string plane away from the picking
+# forearm, so the wrist has to make up the difference. That difference is paid by
+# build_hands.PICK_ROT, which is SOLVED against this mount -- re-run the fixed point
+# after changing this (at -12 the un-re-solved hand folded the picking wrist to a
+# 14 deg mean / 20 deg peak; the re-solve put it back at 5.5 / 13.8, i.e. where the
+# unyawed mount sat). The fretting wrist, whose orientation is dictated by the neck
+# wrap and so cannot be re-solved, pays the rest: 48 -> 53 deg, still well inside
+# WRIST_BEND_MAX. The picking forearm keeps ~3 cm of air over the guitar face.
+BODY_YAW = math.radians(-12.0)
+
+
 def _play_transform():
     """4x4 world matrix that carries the flat guitar frame into playing pose."""
     e = NECK_ELEV
@@ -177,6 +194,7 @@ def _play_transform():
     ez = V((0.0, -1.0, 0.0))                    # face -> forward
     ex = ey.cross(ez)                           # treble side (keeps it right-handed)
     rot = M((ex, ey, ez)).transposed().to_4x4()  # columns = ex, ey, ez
+    rot = M.Rotation(BODY_YAW, 4, 'Z') @ rot     # yaw the neck out toward the audience
     t = V(ANCHOR_WORLD) - (rot @ V(ANCHOR_LOCAL))
     return M.Translation(t) @ rot
 
