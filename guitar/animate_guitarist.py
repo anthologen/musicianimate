@@ -107,8 +107,18 @@ NECK_ELEV = math.radians(35.0)     # neck rises this far above horizontal
 # body -- just grazing it -- and the picking-arm IK flexes the elbow ~9 deg across a
 # chord strum (the forearm swinging on that near-fixed elbow) while the shoulder stays
 # nearly still, and tiny single-note picks barely move the arm at all.
+# Raised 1.050 -> 1.085 on 2026-08-11, when the picking fist was mirrored to the
+# correct RIGHT-hand chirality (build_hands PICK_THUMB_AXIS). That moves the pick
+# PINCH -- and so the wrist, which is the picking arm's IK target -- to the other
+# side of the hand, dropping the wrist ~4 cm for the same pick-tip contact. Worn at
+# the old height the arm then reached 96% of its span at the loud-strum apexes with
+# the elbow out at 149 deg: the locked-elbow "stretchy arm" this constant exists to
+# avoid. +35 mm puts the picking arm back where it was tuned (mean reach 0.456 m,
+# 93% peak, elbow 103/136 deg vs the old hand's 0.451/92%/101/133) and, as a bonus,
+# relaxes the FRETTING wrist from 54 to 48 deg. Re-solve build_hands.PICK_PITCH /
+# PICK_YAW after moving this -- the numbers above are with that re-solve applied.
 ANCHOR_LOCAL = (0.0, fret_layout.PLUCK_Y, fret_layout.STRING_Z)
-ANCHOR_WORLD = (-0.02, -0.195, 1.05)
+ANCHOR_WORLD = (-0.02, -0.195, 1.085)
 
 HOLDER_NAME = "GuitarRig"
 STRAP_NAME = "GuitarStrap"
@@ -150,6 +160,14 @@ WRIST_BEND_MAX = math.radians(90.0)   # max angle the hand's long axis may sit o
 #                                       envelope (a neck-wrapping fret hand rides near it)
 PALM_TO_STRINGS_MIN = 0.20            # the picking palm must face the STRINGS (into the
 #                                       guitar face), never out toward the audience
+# The bend/palm checks above are both blind to CHIRALITY: a mirrored (left) picking
+# fist still points its fingers along the forearm and its palm at the strings, so it
+# passes them while playing with the thumb underneath and the pinky on top -- which
+# is exactly how the bug got in. The thumb is the tell. With the palm on the strings
+# and the fingers running up the neck, a right hand's thumb rides on TOP, so require
+# it to point up; a mirrored hand puts it at ~-0.94 and fails loudly.
+PICK_THUMB_UP_MIN = 0.30              # picking thumb's world +Z component (up = correct
+#                                       right hand; negative = mirrored/upside down)
 
 
 def _play_transform():
@@ -261,15 +279,22 @@ def _wire_arms():
             stub.hide_render = True
 
 
+def _thumb_axis():
+    """The picking fist's thumb edge, in hand-local space (build_hands owns it)."""
+    return _load("build_hands").PICK_THUMB_AXIS
+
+
 def _check_wrist_pose(arm, frames):
     """Validate each playing wrist against human range of motion, sampled over
     `frames` (so the strum extremes are covered too). The hand rigs are oriented
     by AUTHORED matrices, not by a limited joint, so this is the only thing
     standing between a bad build_hands re-solve and a broken wrist. Raises
     RuntimeError -- loud at build time -- on:
-      * a wrist bent more than WRIST_BEND_MAX off the incoming forearm, or
+      * a wrist bent more than WRIST_BEND_MAX off the incoming forearm,
       * a PICKING palm that faces AWAY from the strings (out toward the
-        audience) instead of onto them.
+        audience) instead of onto them, or
+      * a MIRRORED picking fist -- a left hand on the right arm, thumb hanging
+        at the floor (see PICK_THUMB_UP_MIN).
     The fret hand's palm direction is left free (it wraps the neck); only its
     bend is capped."""
     scene = bpy.context.scene
@@ -278,6 +303,7 @@ def _check_wrist_pose(arm, frames):
     saved = scene.frame_current
     worst_bend = {}   # side -> max wrist bend (rad), on the base finger axis
     worst_face = {}   # side -> min palm.into_face, on the POSED palm
+    worst_thumb = {}  # side -> min thumb-axis world Z (picking hand only)
     for f in frames:
         scene.frame_set(int(round(f)))
         bpy.context.view_layer.update()
@@ -312,6 +338,11 @@ def _check_wrist_pose(arm, frames):
                     if into_face is not None else 1.0)
             if side not in worst_face or face < worst_face[side]:
                 worst_face[side] = face
+            # CHIRALITY: the thumb edge of the picking fist must ride on top.
+            if side == "R":
+                thumb = (Rp @ V(_thumb_axis())).normalized().z
+                if side not in worst_thumb or thumb < worst_thumb[side]:
+                    worst_thumb[side] = thumb
     scene.frame_set(saved)
     for side, hand_name in pairs.items():
         if worst_bend.get(side, 0.0) > WRIST_BEND_MAX:
@@ -325,6 +356,12 @@ def _check_wrist_pose(arm, frames):
                 f"{worst_face[side]:+.2f}, need >= {PALM_TO_STRINGS_MIN}); the picking "
                 f"wrist is rotated the wrong way -- fix PICK_PITCH / PICK_YAW in "
                 f"build_hands so the palm turns onto the strings.")
+        if side == "R" and worst_thumb.get(side, 1.0) < PICK_THUMB_UP_MIN:
+            raise RuntimeError(
+                f"{hand_name} thumb points DOWN (world z={worst_thumb[side]:+.2f}, need "
+                f">= {PICK_THUMB_UP_MIN}): the picking fist is built as a MIRRORED left "
+                f"hand -- flip the sign of the x coordinates in build_hands' PICK_FIST / "
+                f"PICK_PINCH / thumb segments so the thumb sits on PICK_THUMB_AXIS.")
     return {side: math.degrees(worst_bend.get(side, 0.0)) for side in pairs}
 
 

@@ -96,6 +96,12 @@ animate_guitarist.animate_guitarist("guitar/fingering.json")
   pick tip (at `PICK_TIP_LOCAL`) across the strings; the fingers/pick are rigid.
   Its orientation (`PICK_ROT`) is **mount-solved** against the standing
   guitarist's picking forearm so the wrist reads straight — see below.
+  It is a **right** hand: fingers +y, palm −z, and therefore thumb, index and
+  pick all on the **−x** side (`PICK_THUMB_AXIS`), the same convention as
+  `bass_guitar/build_hands.py`. Mounted, local +x points nearly straight down,
+  so mirroring that sign builds a *left* hand on the right arm — thumb at the
+  floor, pinky on top — while every other check still passes. `PICK_THUMB_UP_MIN`
+  in `animate_guitarist` is the guard against exactly that.
 - The `Guitarist` stands at the origin facing −Y (left = +X, right = −X). Its
   arms and legs are two-bone IK; the hand rigs bone-parent to the `hand.*`
   stubs so the arm IK carries them. In `animate_guitarist`, the guitar +
@@ -145,6 +151,16 @@ player reads as a player rather than as sticks pointed at the right places.
   the mounted picking forearm (finger axis along the forearm, palm onto the
   strings), which took the picking wrist from 51–93° bent — past the guard — to
   under 20°.
+- **Handedness.** Bend and palm-facing are both blind to *chirality*: a mirrored
+  picking fist still runs its fingers along the forearm with its palm on the
+  strings, so it passes both and simply plays upside down. `_check_wrist_pose`
+  therefore also requires the picking thumb to ride on top (`PICK_THUMB_UP_MIN`).
+  Note the mirror is not free: it moves the pinch — and so the wrist, which is
+  the picking arm's IK target — to the other side of the hand, which drops the
+  wrist ~4 cm for the same pick contact. That is why `ANCHOR_WORLD` is worn
+  35 mm higher and `PICK_ROT` was re-solved on top of it; without both, the
+  picking arm reaches 96% of its span at the loud-strum apexes and the elbow
+  locks out at 149°.
 
 Known residual: a guitar's strings sit only ~7–8 mm apart at the low frets, so
 two realistically-sized fingers pressing adjacent strings at the same fret must

@@ -101,8 +101,21 @@ def hand_world_offset(v):
 # (mean 5), palm-into-strings >= 0.95, and the blade still points into the guitar
 # face. Re-run scratch solver `solve_pick.py` if ANCHOR_WORLD / NECK_ELEV /
 # ELBOW_POLE_OVERRIDE["R"] change much.
-PICK_PITCH = -0.3224   # tilt of the hand about its knuckle axis (solved)
-PICK_YAW = -0.9056     # turn of the hand across the strings (solved)
+#
+# RE-SOLVED 2026-08-11 for the corrected RIGHT-hand fist (see PICK_THUMB_AXIS).
+# Mirroring the fist to the correct chirality moves the PINCH -- and with it the
+# pick tip the animator pins to the strings -- to the other side of the wrist, so
+# the wrist bone (the arm's IK target) landed ~4 cm lower and the forearm arrived
+# at a new angle: the wrist bend doubled (5.9 -> 12.8 deg mean, 33 deg peak) even
+# though nothing about the stroke itself had changed. Re-running the fixed point
+# (together with the +35 mm wear height it forced, see animate_guitarist's
+# ANCHOR_WORLD) brought it back to 0.5-18.0 deg, mean 5.0 -- at or better than the
+# mirrored hand's 1.3-16.3/5.9. Because the solve only sets the FINGER axis (yaw
+# and pitch together fully determine a direction; there is no roll freedom left in
+# this parametrization), the palm stays turned onto the strings at 0.95 and the
+# thumb keeps pointing up (world +Z component 0.94).
+PICK_PITCH = -0.3103   # tilt of the hand about its knuckle axis (solved)
+PICK_YAW = -0.9700     # turn of the hand across the strings (solved)
 
 PICK_ROT = (mathutils.Matrix.Rotation(PICK_YAW, 3, 'Z')
             @ mathutils.Matrix.Rotation(-PICK_PITCH, 3, 'X'))
@@ -230,6 +243,16 @@ def _limit_rot(pbone, limit):
         setattr(lr, f"max_{axis}", math.radians(hi))
 
 
+# CHIRALITY: the picking fist is a RIGHT hand -- fingers +y, palm -z, and
+# therefore the THUMB on the NEGATIVE local x side (thumb = fingers x palm_out =
+# y x -z = -x). Get that sign backwards and the fist is a mirrored LEFT hand:
+# nothing about the *strike* breaks (the tip is re-placed each stroke, the palm
+# still faces the strings and the wrist still reads straight), so it slips past
+# every guard -- it just plays with the thumb underneath. Mounted, local +x
+# points almost straight DOWN (world ~(-0.29, 0, -0.96)), so a +x thumb hangs at
+# the floor and the pinky rides on top: the "upside-down hand" bug. Matches
+# bass_guitar/build_hands.py, whose picking fist is built the same way.
+PICK_THUMB_AXIS = (-1.0, 0.0, 0.0)
 # The pick is pinched between the THUMB PAD and the tip of the curled INDEX
 # (see PICK_FIST): it sits low on the palm rather than out at arm's length past
 # the fingertips, and protrudes DOWNWARD (-z) toward the strings, so the fist
@@ -243,7 +266,7 @@ def _limit_rot(pbone, limit):
 # plane by ~11 mm with the tip on it -- close enough that the hand reads as
 # playing the strings rather than hovering, with room for the strum dip.
 PICK_LENGTH = 0.022
-PICK_PINCH = (0.028, 0.010, -0.035)
+PICK_PINCH = (-0.028, 0.010, -0.035)
 PICK_TIP_LOCAL = (PICK_PINCH[0], PICK_PINCH[1], PICK_PINCH[2] - PICK_LENGTH)
 
 # Where idle hands hover before the animator takes over.
@@ -454,11 +477,13 @@ def _curled_finger(knuckle, lengths, flex_deg):
 # the strings. The index is curled MORE at the MCP than the others (70 vs ~52)
 # precisely so its fingertip reaches DOWN to the pinch rather than staying
 # extended past it.
+# RIGHT hand (PICK_THUMB_AXIS): the knuckle line runs index at -x out to pinky at
+# +x, so mounted the index/pick ride ON TOP and the pinky hangs below.
 PICK_FIST = {
-    "index":  ((0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (70, 70, 50)),
-    "middle": ((0.010, 0.037, 0.021), FRET_FINGERS[2]["lengths"], (52, 98, 62)),
-    "ring":   ((-0.010, 0.036, 0.020), FRET_FINGERS[3]["lengths"], (54, 100, 62)),
-    "pinky":  ((-0.028, 0.034, 0.019), FRET_FINGERS[4]["lengths"], (56, 102, 60)),
+    "index":  ((-0.030, 0.036, 0.020), FRET_FINGERS[1]["lengths"], (70, 70, 50)),
+    "middle": ((-0.010, 0.037, 0.021), FRET_FINGERS[2]["lengths"], (52, 98, 62)),
+    "ring":   ((0.010, 0.036, 0.020), FRET_FINGERS[3]["lengths"], (54, 100, 62)),
+    "pinky":  ((0.028, 0.034, 0.019), FRET_FINGERS[4]["lengths"], (56, 102, 60)),
 }
 
 
@@ -479,8 +504,9 @@ def build_pick_hand(coll, mat):
     _bone_box(arm_obj, coll, mat, "wrist", PICK_PALM_SIZE,
               (0.0, 0.008 - 0.030, 0.013))
 
-    # Finger chains as static boxes, spread across x and pointing along +y
-    # (parallel to the strings), curling into the palm -- see PICK_FIST.
+    # Finger chains as static boxes, spread across x (RIGHT hand: index on the
+    # -x/thumb side, pinky on +x) and pointing along +y (parallel to the
+    # strings), curling into the palm -- see PICK_FIST.
     for name, (knuckle, lengths, flex) in PICK_FIST.items():
         pts = _curled_finger(knuckle, lengths, flex)
         for seg, (a, b) in zip(("prox", "mid", "dist"),
@@ -488,11 +514,12 @@ def build_pick_hand(coll, mat):
             w, h = _finger_cross(name, seg)
             _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
-    # Thumb: lies along the thumb (+x) edge of the palm and curls down toward
-    # the PALM (-z), its pad meeting the curled index fingertip so the pick is
-    # pinched between the two.
-    thumb_base = (0.042, 0.002, -0.006)
-    thumb_knuckle = (0.037, 0.015, -0.022)
+    # Thumb: lies along the thumb (-x) edge of the palm -- the RIGHT hand's
+    # radial edge, see PICK_THUMB_AXIS -- and curls down toward the PALM (-z),
+    # its pad meeting the curled index fingertip so the pick is pinched between
+    # the two.
+    thumb_base = (-0.042, 0.002, -0.006)
+    thumb_knuckle = (-0.037, 0.015, -0.022)
     _seg_box(arm_obj, coll, mat, 0.017, 0.016, thumb_base, thumb_knuckle)
     _seg_box(arm_obj, coll, mat, 0.016, 0.015, thumb_knuckle, PICK_PINCH)
 
