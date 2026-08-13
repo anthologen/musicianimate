@@ -2,11 +2,19 @@
 
 A regression tool for the animation engine: rebuilds the guitar scene
 and hands, animates guitar/fingering.json, then for every frame
-measures the minimum axis distance between the bone segments
-(prox/mid/dist capsules) of each pair of fingers on the evaluated rig.
-Finger boxes are ~11 mm square, so axis distances around 11 mm mean the
-meshes sit flush and below ~10 mm they visibly interpenetrate; the
-mid-hold report at the end excludes transition sweeps.
+measures the minimum SURFACE clearance between the bone segments
+(prox/mid/dist capsules) of each pair of fingers on the evaluated rig --
+the axis distance minus both phalanges' half-widths, which are per-finger
+and per-phalanx (build_hands.FINGER_CROSS, ~18 mm at an index proximal
+down to ~11 mm at a little fingertip). So 0 mm means the boxes are exactly
+flush and anything negative interpenetrates; the mid-hold report at the
+end excludes transition sweeps.
+
+Note that a guitar's strings sit only ~7-8 mm apart at the low frets, so
+two realistically-sized fingers pressing ADJACENT strings at the same fret
+must touch -- as a real player's do. Small negatives on a chord grip are
+that contact; the regressions worth chasing are deep overlaps and fingers
+crossing to the wrong side of a neighbour.
 
 Usage::
 
@@ -22,17 +30,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
 from guitar import build_guitar, build_hands, animate_hands  # noqa: E402
+from guitar.build_hands import _finger_cross  # noqa: E402
 
 build_guitar.build_guitar()
 build_hands.build_hands()
 animate_hands.animate_hands(os.path.join(ROOT, "guitar/fingering.json"))
 
-TOUCH = 0.012    # boxes flush side-by-side
-PENETRATE = 0.010  # visibly intersecting
+PENETRATE = 0.000  # surface clearance below which the boxes intersect
 
 scene = bpy.context.scene
 arm = bpy.data.objects["FretHand"]
 segs = [(f, seg) for f in (1, 2, 3, 4) for seg in ("prox", "mid", "dist")]
+# Half-width of each phalanx box, so distances are measured surface-to-surface.
+RADIUS = {(f, seg): max(_finger_cross(f, seg)) / 2.0 for f, seg in segs}
 
 
 def seg_dist(p1, q1, p2, q2):
@@ -75,6 +85,7 @@ for frame in range(1, scene.frame_end + 1):
     for fa in (1, 2, 3):
         for fb in range(fa + 1, 5):
             dmin = min(seg_dist(*pts[(fa, sa)], *pts[(fb, sb)])
+                       - RADIUS[(fa, sa)] - RADIUS[(fb, sb)]
                        for sa in ("prox", "mid", "dist")
                        for sb in ("prox", "mid", "dist"))
             per_frame[(fa, fb, frame)] = dmin
@@ -89,7 +100,8 @@ for frame in range(1, scene.frame_end + 1):
                 else:
                     w.append((frame, frame, dmin, frame))
 
-print("=== collision windows (axis dist < %.0f mm) ===" % (PENETRATE * 1000))
+print("=== collision windows (surface clearance < %.0f mm) ==="
+      % (PENETRATE * 1000))
 if not windows:
     print("none")
 for (fa, fb), spans in sorted(windows.items()):
@@ -99,7 +111,7 @@ for (fa, fb), spans in sorted(windows.items()):
                   f"at frame {mf} (t {(s-1)/24:.2f}-{(e-1)/24:.2f}s)")
 
 # Distances at mid-hold of each chord: transition sweeps excluded.
-print("=== mid-hold clearances (worst finger pair) ===")
+print("=== mid-hold surface clearances (worst finger pair) ===")
 for label, frame in (("C", 202), ("Am", 226), ("E", 250), ("F", 274),
                      ("Bm", 298), ("cluster", 418), ("E-final", 478)):
     worst = min(((per_frame[(fa, fb, frame)], fa, fb)
