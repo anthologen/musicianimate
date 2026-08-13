@@ -139,7 +139,17 @@ STRAP_NAME = "GuitarStrap"
 # behind and above the wrist -- forearm dropping onto the hand) so the forearm instead
 # rises up the neck to the hand, keeping the wrist relaxed (see NECK_ELEV). Overrides only
 # the playing shot; build_guitarist's free-standing rest pose is left untouched.
-ELBOW_POLE_OVERRIDE = {"R": (-0.6, -0.5, 0.2), "L": (0.55, 0.1, 0.55)}
+# The picking pole's Y was pulled back -0.50 -> -0.35 on 2026-08-12: BODY_YAW had swung
+# the lower bout back toward the hip, opening a visible gap under the picking elbow (the
+# upper-arm box floated 4.3-8.9 cm, mean 6.5, off the guitar surface instead of riding the
+# bout). A pole further FORWARD holds the elbow forward with it; walking it back rotates
+# the elbow down onto the body again -- 2.5-6.9 cm, mean 4.6, i.e. ~2 cm closer the whole
+# take -- while the forearm keeps its air (2.9 cm min, was 3.3) so nothing intersects, and
+# the elbow stays bent (88-132 deg interior) so it can still drive the strum. The pole
+# change re-aims the forearm, so build_hands.PICK_PITCH / PICK_YAW were re-run to their
+# fixed point against it; with that re-solve the picking wrist is unchanged-to-better
+# (bend mean 5.5 -> 5.4 deg, peak 13.8 -> 12.6).
+ELBOW_POLE_OVERRIDE = {"R": (-0.6, -0.35, 0.2), "L": (0.55, 0.1, 0.55)}
 # The guitar, strap and (via the chest, which passively inherits it) the shoulders
 # all ride this torso bone, so the whole upper assembly sways as one unit.
 COUPLE_BONE = "spine"

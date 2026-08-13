@@ -121,8 +121,16 @@ def hand_world_offset(v):
 # the wrist to 3.3-19.9 deg (mean 14.0) with the elbow tightening to 85 deg; the
 # fixed point brought the finger axis back onto the new forearm line: bend back to
 # 0.5-13.8 deg (mean 5.5), palm-into-strings 1.00, elbow 89-134 deg.
-PICK_PITCH = -0.0932   # tilt of the hand about its knuckle axis (solved)
-PICK_YAW = -0.9671     # turn of the hand across the strings (solved)
+#
+# RE-SOLVED 2026-08-12 for animate_guitarist.ELBOW_POLE_OVERRIDE["R"] (the picking
+# elbow pulled ~2 cm closer to the guitar bout, pole y -0.50 -> -0.35). Rotating the
+# elbow about the shoulder->wrist axis swings the FOREARM with it, so the same authored
+# hand met it at a new angle: the wrist folded to 19.1 deg peak. Three iterations of the
+# fixed point converged (dpitch 0.002 rad on the last), putting the bend back at
+# 0.2-12.6 deg (mean 5.4) -- slightly straighter than before the elbow moved --
+# palm-into-strings 0.98, thumb +Z 0.90, elbow 88-132 deg.
+PICK_PITCH = -0.1887   # tilt of the hand about its knuckle axis (solved)
+PICK_YAW = -0.9153     # turn of the hand across the strings (solved)
 
 PICK_ROT = (mathutils.Matrix.Rotation(PICK_YAW, 3, 'Z')
             @ mathutils.Matrix.Rotation(-PICK_PITCH, 3, 'X'))
