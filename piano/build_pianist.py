@@ -106,17 +106,41 @@ HIP_Y = -0.36                  # hip joints: sitting on the FRONT of the bench,
 #                                which is how a pianist sits
 _HIP_Z = SEAT_Z + 0.07         # hip joint above the compressed seat cushion
 
+# How far the whole upper body is rotated BACK about the hip joint, relative to
+# the +y walk the joint stack below was originally authored with. That stack was
+# built ~6 deg forward of vertical (crown 0.090 m ahead of the hip over a 0.85 m
+# rise), which read as a stoop rather than a lean once the blocky torso/head
+# boxes were on it; trimming 3 deg off leaves ~3 deg -- still clearly inclined
+# into the keyboard, but with the back straight. Raise it to sit up further,
+# make it negative to lean in more. This is THE lean knob: every part of the
+# figure above the hips (spine and neck bones, shoulders, and the torso/neck/
+# head mesh boxes, which carry their own hand-tuned offsets) is placed through
+# `_lean_y`, so they all stay in the relationship they were tuned in.
+LEAN_TRIM = math.radians(3.0)
+
+
+def _lean_y(dy, z):
+    """Forward offset `dy` (from the hip, +y = toward the keyboard) of a part
+    sitting `z` above the hip joint, trimmed back by LEAN_TRIM.
+
+    A SHEAR, not a true rotation: the trim moves y only and leaves every height
+    exactly as authored, which matters because the mesh stack below is tuned to
+    close with no gaps (see _clothe) and a rotation would slide those seams."""
+    return HIP_Y + dy - (z - _HIP_Z) * math.tan(LEAN_TRIM)
+
+
 # Seated joint positions (world, metres). The figure faces +Y (the keyboard);
 # left = -X, right = +X. Vertical stack from the seat: hip joint +0.07, upper
 # spine +0.32, shoulders +0.59 (seated acromial height for H = 1.75), neck
 # +0.62, crown +0.92 (seated stature). The small +y walk up the stack is a
-# gentle forward lean into the instrument (~5 deg), not a hunch.
+# gentle forward lean into the instrument, not a hunch -- see LEAN_TRIM, which
+# sets how much of the walk written here actually survives into the rig.
 POSE = {
     "pelvis":     (PLAYER_X, HIP_Y, _HIP_Z),
-    "chest":      (PLAYER_X, HIP_Y + 0.025, SEAT_Z + 0.32),
-    "neck":       (PLAYER_X, HIP_Y + 0.050, SEAT_Z + 0.62),
-    "head_top":   (PLAYER_X, HIP_Y + 0.090, SEAT_Z + 0.92),
-    "shoulder_y": HIP_Y + 0.030, "shoulder_z": SEAT_Z + 0.59,
+    "chest":      (PLAYER_X, _lean_y(0.025, SEAT_Z + 0.32), SEAT_Z + 0.32),
+    "neck":       (PLAYER_X, _lean_y(0.050, SEAT_Z + 0.62), SEAT_Z + 0.62),
+    "head_top":   (PLAYER_X, _lean_y(0.090, SEAT_Z + 0.92), SEAT_Z + 0.92),
+    "shoulder_y": _lean_y(0.030, SEAT_Z + 0.59), "shoulder_z": SEAT_Z + 0.59,
     # The wrists rest exactly where build_hands parks the hand rigs, so the arms
     # are BUILT in the pose they will play in: the hand armature's origin plus
     # the offset to its "wrist" bone head, which is what animate_pianist aims
@@ -379,7 +403,8 @@ def _build_skeleton(coll):
     spine = bone("spine", POSE["pelvis"], POSE["chest"], pelvis, False)
     chest = bone("chest", POSE["chest"], POSE["neck"], spine, True)
     nx, ny, nz = POSE["neck"]
-    neck = bone("neck", (nx, ny, nz), (nx, ny + 0.02, nz + 0.08), chest, True)
+    neck = bone("neck", (nx, ny, nz),
+                (nx, _lean_y(0.070, nz + 0.08), nz + 0.08), chest, True)
     bone("head", neck.tail, POSE["head_top"], neck, True)
 
     rest = {}
@@ -594,17 +619,20 @@ def _clothe(arm, coll):
     # exactly the clearance the arm needs -- so the ribcage sits above z = 0.36
     # and a slimmer abdomen bridges it to the pelvis.
     _bone_upright(arm, coll, skin, "spine", "Torso_Waist",
-                  (PLAYER_X, HIP_Y - 0.010, SEAT_Z + 0.265), (0.26, 0.17, 0.15))
+                  (PLAYER_X, _lean_y(-0.010, SEAT_Z + 0.265), SEAT_Z + 0.265),
+                  (0.26, 0.17, 0.15))
     # Stack closes with no gaps: waist 0.19..0.34 above the seat, chest
     # 0.33..0.60 (its top reaching the shoulder joints at 0.59, so the clavicle
     # bars sit ON it), neck 0.585..0.6925, head 0.6925..0.92.
     _bone_upright(arm, coll, skin, "spine", "Torso_Chest",
-                  (PLAYER_X, HIP_Y + 0.015, SEAT_Z + 0.465),
+                  (PLAYER_X, _lean_y(0.015, SEAT_Z + 0.465), SEAT_Z + 0.465),
                   (ANTHRO["torso_w"], ANTHRO["torso_d"], 0.27))
     _bone_upright(arm, coll, skin, "neck", "Neck",
-                  (PLAYER_X, HIP_Y + 0.055, SEAT_Z + 0.639), (0.10, 0.10, 0.108))
+                  (PLAYER_X, _lean_y(0.055, SEAT_Z + 0.639), SEAT_Z + 0.639),
+                  (0.10, 0.10, 0.108))
+    _head_z = SEAT_Z + 0.92 - ANTHRO["head"][2] / 2.0
     _bone_upright(arm, coll, skin, "head", "Head",
-                  (PLAYER_X, HIP_Y + 0.050, SEAT_Z + 0.92 - ANTHRO["head"][2] / 2.0),
+                  (PLAYER_X, _lean_y(0.050, _head_z), _head_z),
                   ANTHRO["head"])   # crown at seated stature
 
     for side in ("L", "R"):
