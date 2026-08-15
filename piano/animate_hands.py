@@ -15,6 +15,12 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
     natural flexion. No IK constraints are used, so the result is plain
     baked FK keyframes - every one of which lands inside the joint cage
     build_hands.py puts on the bones.
+  - The whole hand is solved together, at the union of every finger's
+    keyframe times, so no two fingers pass through each other: a finger
+    with no note to play settles back over its own knuckle instead of
+    holding the sideways reach of the key it last played, and whatever is
+    not holding a key down is then slid aside and lifted until its
+    phalanges clear their neighbours' by real surface distance.
   - Press timing mirrors piano_midi_animator.py: velocity sets attack
     speed (loud = fast), with the same release tail, so fingertips and
     keys dip together when both animators are run on the same MIDI.
@@ -37,13 +43,15 @@ import bpy
 
 try:
     from .piano_midi_animator import _iter_action_fcurves
-    from .build_hands import FINGERS
+    from .build_hands import (FINGERS, PALM_CENTRE, PALM_SIZE, rot_limit,
+                              _finger_cross)
     from . import key_layout
 except ImportError:  # loaded as a loose script via importlib
     import sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from piano_midi_animator import _iter_action_fcurves
-    from build_hands import FINGERS
+    from build_hands import (FINGERS, PALM_CENTRE, PALM_SIZE, rot_limit,
+                             _finger_cross)
     import key_layout
 
 
@@ -140,6 +148,84 @@ THUMB_FRONT_PULL = 0.012
 DEEP_WHITE_Y = 0.050
 DEEP_WHITE_THUMB_Y = 0.045
 
+# --- idle fingers ------------------------------------------------------------
+# The IK aims each finger at its own key and knows nothing about where the other
+# four are, so a finger that has finished its note used to sit there holding the
+# sideways reach it played with, frame after frame, while the wrist glided on to
+# the next chord. That stale splay is what put fingers through one another: by
+# the time the hand had moved a key or two along, a finger still pointing back at
+# the note it had released was lying across its neighbour.
+#
+# A real hand does the opposite - the moment a finger is done it comes back over
+# its own knuckle, curved and hovering. So any gap in a finger's note list is
+# spent in an IDLE pose: straight ahead of its knuckle, no sideways reach at all,
+# at the hover height above the keybed.
+IDLE_GAP = 0.30        # s: a gap at least this long between a finger's notes is
+                       # spent idle rather than holding the last hover pose
+IDLE_SETTLE = 0.10     # s: how long the finger takes to fall into / leave idle
+
+# An idle finger reaches further along its own length than a pressing one does
+# (REACH_FRAC), because it is not arching down onto a key: at 0.55 the knuckle
+# has to hyperextend ~18 deg to hold the tip at hover height, which puts every
+# idle PIP joint ABOVE its own knuckle - a tent rather than a hand, and the pose
+# from which two neighbours most easily sweep across each other. At 0.75 the MCP
+# sits near neutral and the finger drapes.
+IDLE_REACH = 0.75
+
+# The thumb rests ON the keys beside the fingers rather than curled under the
+# palm: its CMC sits only 14 mm below the knuckle line here, so a folded thumb
+# would have to arch its metacarpal UP over the palm - past the CMC's extension
+# range, and straight through the index - to bring its tip back. It needs its own
+# reach because IDLE_REACH of a thumb is one of the poses that arches; 62 mm
+# keeps the column extended and the CMC comfortably inside its cage.
+THUMB_IDLE_Y = 0.062
+# ...and it rests to the RADIAL side, not straight ahead of its own CMC, which in
+# this rig sits directly behind the index knuckle (1 mm apart across the
+# keyboard) - so a thumb pointing straight ahead lies along the index for its
+# whole length. A real one is turned out across a key or two, which is both where
+# it rests and what gives its column room to extend.
+THUMB_IDLE_X = 0.030
+
+# --- finger-to-finger clearance ----------------------------------------------
+# Measured between finger SURFACES, not bone axes, exactly as the guitarist's
+# fret hand measures it (guitar/animate_hands.FINGER_RADIUS): each phalanx is a
+# capsule whose radius comes from its anthropometric box, so the 18 mm index
+# proximal and the 11 mm little fingertip are judged by what they actually
+# occupy. Two chains are clear when every pair of their phalanges is.
+#
+# The digit holding a key down is the one that never moves; everyone else gives
+# way around it, by however much they can afford to. An idle finger has a free
+# hand and takes the whole search; a finger only on its way to (or off) a key is
+# not sounding a note yet, so it may be nudged - HOVER_GIVE of the same freedom -
+# which is what stops a finger stretched out early toward a key the wrist has
+# not reached yet from landing on the finger already playing there. The search is
+# scored like the guitar's _idle_finger_pose: clear the obstacle up to
+# IDLE_CLEAR_TARGET, then sit as close to where the digit wanted to be as
+# possible.
+#
+# Phalanges that meet INSIDE the palm box are not judged at all. The thumb's
+# column is rooted a millimetre across from the index knuckle and 14 mm below it,
+# so the two are in contact there in almost any pose - as the thenar mass and the
+# index MCP are in a real hand. Both are buried in the palm; only the part of a
+# digit that sticks out of it can be seen crossing anything, and that is still
+# tested.
+SEGS = ("prox", "mid", "dist")
+FINGER_RADIUS = {(f, seg): max(_finger_cross(f, seg)) / 2.0
+                 for f in FINGERS for seg in SEGS}
+IDLE_CLEAR_TARGET = 0.0015   # m of surface clearance worth searching for
+HOVER_GIVE = 0.4             # an approaching/lifting finger's share of an idle
+                             # one's freedom to be nudged aside. A finger holding
+                             # a key DOWN gets none at all: it is sounding a
+                             # note, and moving it even a couple of mm off its
+                             # key reads worse than the crossing it would fix.
+SLIDE_STEP, SLIDE_MAX = 0.0035, 0.0175      # sideways, either way
+RETREAT_STEP, RETREAT_MAX = 0.006, 0.036    # up off the keys, or down onto them
+IDLE_SLIDE_COST = 0.06       # per m of sideways slide from the neutral idle
+IDLE_RETREAT_COST = 0.03     # per m of retreat; cheaper, because a finger
+                             # lifting away is the less conspicuous of the two
+IDLE_RETREAT_TUCK = 0.35     # fraction of a retreat also taken out of the reach,
+                             # so the digit curls up rather than pointing out
+
 
 def _target_y(note, has_black=False):
     if note["is_black"]:
@@ -149,6 +235,20 @@ def _target_y(note, has_black=False):
     if note["finger"] == 1:
         return note["y"] - THUMB_FRONT_PULL
     return note["y"]
+
+
+def _wrist_x_for(note, mirror):
+    """The wrist x that puts this digit's fingertip on its key.
+
+    A finger works straight ahead of its knuckle, so the wrist simply sits its
+    knuckle offset away. The thumb does not: it plays turned OUT to the radial
+    side (THUMB_IDLE_X), so for a thumb note the hand sits that much further
+    along the keyboard - which is also what keeps the thumb's column from lying
+    along the index finger, the two being rooted a millimetre apart.
+    """
+    kx = FINGERS[note["finger"]]["knuckle"][0]
+    out = mirror * THUMB_IDLE_X if note["finger"] == 1 else 0.0
+    return note["x"] + out - kx * mirror
 
 
 def _splay_cap(finger):
@@ -189,6 +289,68 @@ def _finger_ik(dx, dy, dv, lengths, dist_flex, splay_cap=MAX_YAW):
     return yaw, delta - psi, math.pi - phi - gamma
 
 
+def _finger_chain(knuckle, lengths, yaw, prox, mid, dist_flex):
+    """World-space [knuckle, PIP, DIP, tip] for one posed finger.
+
+    Only the proximal bone carries the sideways rotation (see _pose_finger), so
+    the whole chain lies in the vertical plane the knuckle's yaw picks out.
+    """
+    pts = [tuple(knuckle)]
+    pitch = 0.0
+    for length, bend in zip(lengths, (prox, mid, dist_flex)):
+        pitch += bend
+        h = length * math.cos(pitch)
+        pts.append((pts[-1][0] + h * math.sin(yaw),
+                    pts[-1][1] + h * math.cos(yaw),
+                    pts[-1][2] - length * math.sin(pitch)))
+    return pts
+
+
+def _seg_dist(p1, q1, p2, q2):
+    """(shortest distance, midpoint of the closest approach) for two segments."""
+    def sub(a, b):
+        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+    def dot(a, b):
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    d1, d2, r = sub(q1, p1), sub(q2, p2), sub(p1, p2)
+    a, e = dot(d1, d1), dot(d2, d2)
+    f, c, b = dot(d2, r), dot(d1, r), dot(d1, d2)
+    denom = a * e - b * b
+    s = 0.0 if denom < 1e-12 else max(0.0, min(1.0, (b * f - c * e) / denom))
+    t = max(0.0, min(1.0, (b * s + f) / e)) if e > 1e-12 else 0.0
+    s = max(0.0, min(1.0, (b * t - c) / a)) if a > 1e-12 else 0.0
+    ca = tuple(p1[k] + d1[k] * s for k in range(3))
+    cb = tuple(p2[k] + d2[k] * t for k in range(3))
+    return math.dist(ca, cb), tuple((ca[k] + cb[k]) / 2.0 for k in range(3))
+
+
+def _in_palm(point, wrist):
+    """Whether a world point falls inside the palm box."""
+    return all(abs(p - (w + c)) <= h / 2.0
+               for p, w, c, h in zip(point, wrist, PALM_CENTRE, PALM_SIZE))
+
+
+def _chain_clearance(fa, ca, fb, cb, wrist):
+    """Surface clearance (m, negative = interpenetrating) between two posed
+    finger chains, each [knuckle, PIP, DIP, tip] in world space.
+
+    Phalanges that meet inside the palm are skipped (see the notes above): the
+    thumb's column is rooted a millimetre across from the index knuckle and
+    14 mm below it, so the two touch there in almost any pose, and both are
+    inside the palm box where nothing can be seen crossing anything."""
+    out = []
+    for k in range(3):
+        for m in range(3):
+            d, mid = _seg_dist(ca[k], ca[k + 1], cb[m], cb[m + 1])
+            if _in_palm(mid, wrist):
+                continue
+            out.append(d - FINGER_RADIUS[(fa, SEGS[k])]
+                       - FINGER_RADIUS[(fb, SEGS[m])])
+    return min(out) if out else float("inf")
+
+
 def _press_z(is_black, depth_white, depth_black):
     top = key_layout.WHITE_H + (key_layout.BLACK_H if is_black else 0.0)
     return top - (depth_black if is_black else depth_white)
@@ -216,9 +378,9 @@ def _event_root_target(event, mirror):
     xs, ys = [], []
     for n in event["notes"]:
         spec = FINGERS[n["finger"]]
-        kx, ky, _kz = spec["knuckle"]
+        _kx, ky, _kz = spec["knuckle"]
         reach = REACH_FRAC * sum(spec["lengths"])
-        xs.append(n["x"] - kx * mirror)
+        xs.append(_wrist_x_for(n, mirror))
         ys.append(_target_y(n, has_black) - (ky + reach))
     z = HOVER_Z + (BLACK_KEY_LIFT if has_black else 0.0)
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, z)
@@ -243,10 +405,10 @@ def _splay_clamp_x(event, tgt, mirror):
     has_black = any(n["is_black"] for n in event["notes"])
     lo, hi = float("-inf"), float("inf")
     for n in event["notes"]:
-        kx, ky, _kz = FINGERS[n["finger"]]["knuckle"]
+        _kx, ky, _kz = FINGERS[n["finger"]]["knuckle"]
         dy = max(_target_y(n, has_black) - (tgt[1] + ky), MIN_REACH_Y)
         span = math.tan(_splay_cap(n["finger"])) * dy
-        centre = n["x"] - kx * mirror
+        centre = _wrist_x_for(n, mirror)
         lo = max(lo, centre - span)
         hi = min(hi, centre + span)
     x = (lo + hi) / 2.0 if lo > hi else max(lo, min(hi, tgt[0]))
@@ -383,6 +545,169 @@ def _smooth_targets(events, targets, sigma=SMOOTH_SIGMA):
     return smoothed
 
 
+def _ease(u):
+    """Blender's SINE keyframe interpolation (ease-in), so sampling a pose
+    between two keys here reproduces what the baked f-curve will do."""
+    return 1.0 - math.cos(max(0.0, min(1.0, u)) * math.pi / 2.0)
+
+
+def _sample(keys, frame):
+    """Interpolate a list of (frame, value-tuple) keys the way Blender will."""
+    if frame <= keys[0][0]:
+        return keys[0][1]
+    if frame >= keys[-1][0]:
+        return keys[-1][1]
+    for (fa, va), (fb, vb) in zip(keys, keys[1:]):
+        if fa <= frame <= fb:
+            u = _ease(0.0 if fb <= fa else (frame - fa) / (fb - fa))
+            return tuple(a + (b - a) * u for a, b in zip(va, vb))
+    return keys[-1][1]
+
+
+def _sample_plan(plan, frame):
+    """(key target or None, distal flexion, idle mix, give) for one plan.
+
+    A plan entry's target is None when the finger is idle there, and an idle
+    pose is only a point once the knuckle is known - so rather than a target
+    this returns how far the finger has eased TOWARD idle (0 = on its key
+    target, 1 = fully idle), leaving the caller to resolve the idle end. `give`
+    is the entry's own freedom to be nudged: 0 while a key is held down, 1 the
+    rest of the time.
+    """
+    if frame <= plan[0][0]:
+        _fr, tgt, flex, give = plan[0]
+    elif frame >= plan[-1][0]:
+        _fr, tgt, flex, give = plan[-1]
+    else:
+        for (fa, ta, xa, ga), (fb, tb, xb, gb) in zip(plan, plan[1:]):
+            if fa <= frame <= fb:
+                u = _ease(0.0 if fb <= fa else (frame - fa) / (fb - fa))
+                flex, give = xa + (xb - xa) * u, ga + (gb - ga) * u
+                if ta is None and tb is None:
+                    return None, flex, 1.0, give
+                if ta is None:
+                    return tb, flex, 1.0 - u, give
+                if tb is None:
+                    return ta, flex, u, give
+                return (tuple(a + (b - a) * u for a, b in zip(ta, tb)),
+                        flex, 0.0, give)
+        _fr, tgt, flex, give = plan[-1]
+    return tgt, flex, 1.0 if tgt is None else 0.0, give
+
+
+def _knuckle(finger, wrist, mirror):
+    kx, ky, kz = FINGERS[finger]["knuckle"]
+    return (wrist[0] + kx * mirror, wrist[1] + ky, wrist[2] + kz)
+
+
+def _idle_target(finger, knuckle, mirror, hover_z, slide=0.0, retreat=0.0):
+    """Where a digit that is not playing puts its fingertip.
+
+    Straight ahead of its own knuckle - no sideways reach at all - arched to the
+    same fraction of its length a press uses, hovering over the keys; the thumb
+    turned out to the radial side (THUMB_IDLE_X). ``slide`` and ``retreat`` are
+    the nudges _solve_clear uses to get a digit out of a neighbour's way: aside,
+    and up off the keys - or, negative, out and down onto them, which is what a
+    digit with little drop left beneath it (a low wrist) has to do instead. A
+    retreat also trades reach for height (IDLE_RETREAT_TUCK), so the digit curls
+    in rather than pointing up.
+    """
+    if finger == 1:
+        reach, out = THUMB_IDLE_Y, -mirror * THUMB_IDLE_X
+    else:
+        reach, out = IDLE_REACH * sum(FINGERS[finger]["lengths"]), 0.0
+    reach = max(MIN_REACH_Y, reach - IDLE_RETREAT_TUCK * retreat)
+    return (knuckle[0] + out + slide, knuckle[1] + reach, hover_z + retreat)
+
+
+def _in_cage(finger, yaw, prox, mid, dist_flex):
+    """Whether this pose lands inside build_hands' joint cage.
+
+    The LIMIT_ROTATION constraints on the bones are guards, never clampers: a
+    keyframe outside them would be silently pulled back in the scene, and the
+    pose that then shows up is not the one the clearance search checked. So the
+    search only ever considers poses that survive the cage.
+    """
+    for seg, rx, rz in (("prox", -prox, -yaw), ("mid", -mid, 0.0),
+                        ("dist", -dist_flex, 0.0)):
+        limit = rot_limit(finger, seg)
+        for axis, val in (("x", rx), ("z", rz)):
+            lo, hi = limit[axis]
+            if not math.radians(lo) <= val <= math.radians(hi):
+                return False
+    return True
+
+
+def _pose_from_target(finger, knuckle, target, dist_flex):
+    """(yaw, prox, mid) putting this finger's tip on a world-space target."""
+    return _finger_ik(target[0] - knuckle[0], target[1] - knuckle[1],
+                      knuckle[2] - target[2], FINGERS[finger]["lengths"],
+                      dist_flex, _splay_cap(finger))
+
+
+def _grid(step, span, signed):
+    n = int(span / step + 1e-9)
+    return tuple(i * step for i in range(-n if signed else 0, n + 1))
+
+
+def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
+                 obstacles, key_target, mix, budget):
+    """Where `finger`'s tip goes so it keeps clear of the chains already placed.
+
+    `key_target`/`mix` say what the digit wants: a point on a key, the idle pose
+    over its own knuckle, or - through the ease either side of a rest - a blend
+    of the two. That wish is tried first and kept if it is already clear.
+    Otherwise a grid of sideways slides and retreats around it is searched for
+    the pose that clears its neighbours while straying least, which is how a
+    hand keeps its fingers apart: the free ones move aside and away, the one
+    holding a key does not move at all.
+
+    `budget` (0..1) is how far that search may stray - near zero for a finger on
+    its key, whose grid then collapses to the wish itself. `obstacles` are
+    (finger, chain) pairs: every digit placed before this one, so no two fingers
+    settle into each other either. Candidates that would take a joint outside its
+    range of motion are not considered at all (_in_cage).
+    """
+    def wish(slide=0.0, retreat=0.0):
+        idle = _idle_target(finger, knuckle, mirror, hover_z, slide,
+                            retreat)
+        if key_target is None:
+            return idle
+        if mix <= 0.0:
+            return (key_target[0] + slide, key_target[1],
+                    key_target[2] + retreat)
+        return tuple(k + (i - k) * mix for k, i in zip(key_target, idle))
+
+    best, fallback = None, None
+    for retreat in _grid(RETREAT_STEP, budget * RETREAT_MAX, True):
+        for slide in _grid(SLIDE_STEP, budget * SLIDE_MAX, True):
+            target = wish(slide, retreat)
+            pose = _pose_from_target(finger, knuckle, target, dist_flex)
+            if not _in_cage(finger, *pose, dist_flex):
+                continue
+            if fallback is None:
+                fallback = target
+            if not obstacles:
+                return target
+            chain = _finger_chain(knuckle, FINGERS[finger]["lengths"], *pose,
+                                  dist_flex)
+            clear = min(_chain_clearance(finger, chain, g, oc, wrist)
+                        for g, oc in obstacles)
+            if clear >= IDLE_CLEAR_TARGET and slide == 0.0 and retreat == 0.0:
+                return target
+            score = (min(clear, IDLE_CLEAR_TARGET)
+                     - IDLE_SLIDE_COST * abs(slide)
+                     - IDLE_RETREAT_COST * abs(retreat))
+            if best is None or score > best[0]:
+                best = (score, target)
+    if best is not None:
+        return best[1]
+    # Nothing in the grid is inside the cage: a key the hand cannot really hold.
+    # Keep what was asked for, exactly as the wrist search's own compromises are
+    # kept, and let the bone constraints show it for what it is.
+    return fallback if fallback is not None else wish()
+
+
 def _pose_finger(pbones, finger, yaw, prox, mid, dist_flex, frame):
     for seg, rx, rz in (("prox", -prox, -yaw), ("mid", -mid, 0.0),
                         ("dist", -dist_flex, 0.0)):
@@ -407,11 +732,10 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     def to_frame(t):
         return frame_start + t * fps
 
-    for f in FINGERS:
-        _relax_finger(pbones, f, frame_start)
-
     events = _group_events(notes)
     if not events:
+        for f in FINGERS:
+            _relax_finger(pbones, f, frame_start)
         return frame_start
 
     # --- wrist (armature object) location ---------------------------------
@@ -422,9 +746,15 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         events, [_event_root_target(ev, mirror) for ev in events]),
         mirror, press_depth_white, press_depth_black)
 
+    # Kept as well as keyed: the finger solve below needs to know where the
+    # wrist actually is at each frame it poses a finger, not just where the
+    # event it belongs to wanted it.
+    wrist_keys = []
+
     def key_root(t, target):
         arm_obj.location = target
         arm_obj.keyframe_insert(data_path="location", frame=to_frame(t))
+        wrist_keys.append((to_frame(t), target))
 
     prev_t = None
     for i, (ev, target) in enumerate(zip(events, targets)):
@@ -450,39 +780,52 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             prev_t = arrive
 
     # --- fingers -----------------------------------------------------------
-    # Process notes per finger so consecutive notes on the same finger can
-    # be clamped against each other: a release tail must never land on top
-    # of the next note's approach or press.
+    # Each finger first gets a PLAN: where its fingertip should be at a handful
+    # of frames - approach, press, hold, release - plus the idle poses it
+    # settles into between notes. Nothing is keyed yet, because where a finger
+    # can go is not its own business alone: the plans are resolved together
+    # below, at the union of all their frames, so an idle finger can be moved
+    # out of a pressing neighbour's way.
+    #
+    # Notes are planned per finger so consecutive notes on the same finger can
+    # be clamped against each other: a release tail must never land on top of
+    # the next note's approach or press.
     per_finger = {}
-    for ev, target in zip(events, targets):
+    for ev in events:
         has_black = any(n["is_black"] for n in ev["notes"])
         for n in ev["notes"]:
-            per_finger.setdefault(n["finger"], []).append(
-                (n, target, has_black))
+            per_finger.setdefault(n["finger"], []).append((n, has_black))
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
         return max_attack_frames - vel_t * (max_attack_frames -
                                             min_attack_frames)
 
+    hover_z = _press_z(False, press_depth_white, press_depth_black) + HOVER_LIFT
+    idle_gap, idle_settle = IDLE_GAP * fps, IDLE_SETTLE * fps
+
+    # A plan entry is (frame, target, dist_flex, give); target None means
+    # "idle", which only becomes a point once the wrist - and so the knuckle -
+    # is known, and give is 0 only while the key is actually held down.
+    IDLE = (None, DIST_FLEX_HOVER, 1.0)
+    plans = {f: [(frame_start,) + IDLE] for f in FINGERS}
+
+    def plan_idle(plan, until):
+        """Spend a real gap before `until` back in the idle pose."""
+        since = plan[-1][0]
+        if until - since >= idle_gap:
+            plan.append((since + idle_settle,) + IDLE)
+            plan.append((until - idle_settle,) + IDLE)
+
     last_frame = frame_start
     for f, items in per_finger.items():
-        spec = FINGERS[f]
-        kx, ky, kz = spec["knuckle"]
+        plan = plans[f]
         prev_off = None
-        for i, (n, target, has_black) in enumerate(items):
-            knuckle = (target[0] + kx * mirror, target[1] + ky,
-                       target[2] + kz)
+        for i, (n, has_black) in enumerate(items):
             press_z = _press_z(n["is_black"], press_depth_white,
                                press_depth_black)
-            dx = n["x"] - knuckle[0]
-            dy = _target_y(n, has_black) - knuckle[1]
-
-            cap = _splay_cap(f)
-            pressed = _finger_ik(dx, dy, knuckle[2] - press_z,
-                                 spec["lengths"], DIST_FLEX_PRESS, cap)
-            hover = _finger_ik(dx, dy, knuckle[2] - (press_z + HOVER_LIFT),
-                               spec["lengths"], DIST_FLEX_HOVER, cap)
+            key = (n["x"], _target_y(n, has_black), press_z)
+            up = (key[0], key[1], key[2] + HOVER_LIFT)
 
             on_frame = to_frame(n["start"])
             off_frame = max(on_frame, to_frame(n["end"]))
@@ -491,12 +834,10 @@ def animate_hand(arm_obj, notes, fps, frame_start,
                 hover_frame = max(hover_frame, prev_off + 0.5)
             hover_frame = min(hover_frame, on_frame)
 
-            _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                         DIST_FLEX_HOVER, hover_frame)
-            _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                         DIST_FLEX_PRESS, on_frame)
-            _pose_finger(pbones, f, pressed[0], pressed[1], pressed[2],
-                         DIST_FLEX_PRESS, off_frame)
+            plan_idle(plan, hover_frame)
+            plan.append((hover_frame, up, DIST_FLEX_HOVER, 1.0))
+            plan.append((on_frame, key, DIST_FLEX_PRESS, 0.0))
+            plan.append((off_frame, key, DIST_FLEX_PRESS, 0.0))
 
             release_frame = off_frame + release_frames
             if i + 1 < len(items):
@@ -505,10 +846,53 @@ def animate_hand(arm_obj, notes, fps, frame_start,
                                 to_frame(nxt["start"]) - attack_frames(nxt))
                 release_frame = min(release_frame, nxt_hover - 0.5)
             if release_frame > off_frame + 0.25:
-                _pose_finger(pbones, f, hover[0], hover[1], hover[2],
-                             DIST_FLEX_HOVER, release_frame)
+                # Lift off the key just played only while the finger is going
+                # to stay in that neighbourhood - a repeat, or a quick
+                # alternation. With a real gap ahead of it the finger comes
+                # straight back over its own knuckle instead: by the time the
+                # tail is over, the wrist has moved on, and a fingertip still
+                # held above the key it played is a finger reaching backwards
+                # across whatever the hand has arrived at.
+                soon = (i + 1 < len(items)
+                        and to_frame(items[i + 1][0]["start"])
+                        - release_frame < idle_gap)
+                plan.append((release_frame, up, DIST_FLEX_HOVER, 1.0)
+                            if soon else (release_frame,) + IDLE)
             prev_off = off_frame
             last_frame = max(last_frame, off_frame + release_frames)
+        plan.append((plan[-1][0] + idle_gap,) + IDLE)
+
+    # --- resolve the whole hand, frame by frame ----------------------------
+    # At every frame any digit is keyed at, all five are posed together and one
+    # at a time, least free first: a finger holding a key down goes exactly where
+    # its key is and becomes an obstacle, then the ones approaching or lifting
+    # off, then the idle - each nudged aside and away until it clears everything
+    # already placed. Keying all five at every moment also means the f-curves
+    # share their key times, so fingers that are apart at two keys stay apart
+    # through the SINE ease between them.
+    wrist_keys.sort(key=lambda k: k[0])
+    moments = sorted({frame_start}
+                     | {fr for fr, _loc in wrist_keys}
+                     | {e[0] for plan in plans.values() for e in plan})
+    for frame in moments:
+        wrist = _sample(wrist_keys, frame)
+        knuckles, digits = {}, []
+        for f in FINGERS:
+            knuckles[f] = _knuckle(f, wrist, mirror)
+            target, flex, mix, give = _sample_plan(plans[f], frame)
+            digits.append((max(mix, HOVER_GIVE * give), f, target, flex, mix))
+        # Least free first: the finger holding a key down is placed exactly
+        # where its key is and becomes an obstacle, then the ones with a little
+        # give, then the fully idle - so what has to move is what can.
+        placed = []
+        for budget, f, target, flex, mix in sorted(digits,
+                                                   key=lambda d: d[0]):
+            target = _solve_clear(f, knuckles[f], mirror, wrist, hover_z,
+                                  flex, placed, target, mix, budget)
+            pose = _pose_from_target(f, knuckles[f], target, flex)
+            _pose_finger(pbones, f, *pose, flex, frame)
+            placed.append((f, _finger_chain(knuckles[f], FINGERS[f]["lengths"],
+                                            *pose, flex)))
 
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):

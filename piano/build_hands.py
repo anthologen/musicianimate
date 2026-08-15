@@ -102,6 +102,15 @@ FINGER_PROFILE = {1: "thumb", 2: "index", 3: "middle", 4: "ring", 5: "pinky"}
 # and ~24 mm thick through the palm, not 95 x 20.
 PALM_SIZE = (0.086, 0.072, 0.024)
 
+# Where the wrist bone and its palm box sit in armature space. The box is
+# bone-parented to the wrist bone, whose parent space has its origin at the bone
+# TAIL, so its centre lands PALM_OFFSET_Y in front of that. Kept as constants
+# because animate_hands needs the same box: a phalanx inside the palm is buried
+# in the hand's own mass, and nothing there can be seen crossing anything.
+WRIST_BONE_Y = (-0.025, 0.030)   # head, tail
+PALM_OFFSET_Y = -0.013
+PALM_CENTRE = (0.0, WRIST_BONE_Y[1] + PALM_OFFSET_Y, 0.0)
+
 # --- Finger joint range-of-motion limits (human norms; degrees) --------------
 # Ported from the guitar/bass fret hands (their FINGER_ROT_LIMIT), which cage
 # every phalanx the way build_guitarist/build_bassist cage the elbow and knee:
@@ -234,8 +243,8 @@ def build_hand(side, coll, mat):
     eb = arm_data.edit_bones
 
     wrist = eb.new("wrist")
-    wrist.head = (0.0, -0.025, 0.0)
-    wrist.tail = (0.0, 0.030, 0.0)
+    wrist.head = (0.0, WRIST_BONE_Y[0], 0.0)
+    wrist.tail = (0.0, WRIST_BONE_Y[1], 0.0)
 
     bone_lengths = {}
     for f, spec in FINGERS.items():
@@ -272,7 +281,7 @@ def build_hand(side, coll, mat):
 
     # Palm spans from the wrist to the knuckle line (wrist bone tail at
     # y=0.030 is the parent-space origin).
-    _bone_box(arm_obj, coll, mat, "wrist", PALM_SIZE, -0.013)
+    _bone_box(arm_obj, coll, mat, "wrist", PALM_SIZE, PALM_OFFSET_Y)
 
     return arm_obj
 
