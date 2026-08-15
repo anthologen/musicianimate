@@ -332,6 +332,80 @@ Sources: Drillis & Contini (1966) body-segment parameters; Winter,
 H = 1.75 m). The 0.71 m key height is `build_piano`'s own geometry; the 0.50 m
 bench is the standard piano-bench height that pairs with it.
 
+## Getting from one position to the next: the hand has to leave the keys
+
+Everything above is about where the hand *plays*. What it did in between was
+slide: the wrist glided flat, at the height it plays at, straight across the
+keyboard. Three things were wrong with that, and on the A0↔C8 reach take
+(`animated_piano_reach.blend`) all three are plainly visible — the worst
+fingertip during a move sat **28 mm below the white key tops**, i.e. inside the
+instrument.
+
+- **A hovering fingertip is not clear of the keys.** It hovers 7.5 mm over a
+  white key, but a black key stands 12 mm higher — so the same fingertip is
+  4.5 mm *under* the top of every black key it passes.
+- **A finger still holding its key was dragged.** The wrist departs as late as
+  the hold allows but never later than `MIN_TRAVEL` before the next event needs
+  it, so in a legato piece with big leaps it is already moving while the key is
+  down. Pinned to that key, the finger flattens out, the IK runs out of length
+  and the fingertip is towed sideways *at press depth* — through everything
+  between the two positions. The reach take is nothing but this: 0.45 s notes
+  0.5 s apart, leaping up to half a metre.
+- **The clearance search could not see the keyboard.** `_solve_clear` knows only
+  about the other four digits, and "give way" includes giving way *downward*.
+  A digit with a neighbour in its way therefore took the full 36 mm retreat and
+  ended up buried in the keybed — the thumb, whose idle pose sits lowest, did
+  this for most of the take. Worse, the search walked its grid in index order
+  and returned the first pose the joint cage allowed, which is that same
+  downward corner, so a digit with *nothing* in its way did it too.
+
+The fix is what a pianist does: lift off, travel above the keys, come down onto
+the next position. Each gap between events gets a **`_travel_lift`** — a smooth
+hump added to the wrist height and to every fingertip target that is not holding
+a key down, zero at both ends so the pose at either event is exactly the one
+`_wrist_fit` chose, peaking halfway across. Its height scales with the distance
+travelled (12%, capped at 32 mm, ignored under 45 mm of travel), because a shift
+to the neighbouring chord should barely lift and a leap across the board should
+clear the black keys with room. Because the hand translates **rigidly** — wrist
+and fingertips by the same amount — the pose at the top of the arc is one
+already checked against the joint cage and the finger-to-finger clearances;
+only its height is new. A key the hand walks out on is **released** when the
+wrist goes rather than dragged (the key itself stays down: it is the MIDI, and
+a leap like that is pedalled anyway). And the clearance search now charges for
+sinking a digit into the keybed (`KEYBED_COST`) and walks its grid **cheapest
+first**, so the digit's own wish is always tried before any nudge and the
+nearest legal pose wins when the cage refuses it. The halfway point of every
+travel is posed as well: the fingers are keyed at the wrist's own key times, so
+they agree with it exactly there and drift in between, and a digit still holding
+a key while the wrist walks off is precisely where that drift shows.
+
+One more thing had to change for the arc to read: the wrist's f-curves are now
+**BEZIER/`AUTO_CLAMPED`**, not SINE. SINE is one-sided (ease-in): the hand left
+a position at zero speed, was still accelerating when it reached the next one,
+and stopped dead — measured on the reach take's 530 mm leap, 91 mm/frame into
+the arrival. That is fine for a *press*, which should land at speed and stays on
+SINE (and in step with the key dips `piano_midi_animator` bakes), and wrong for
+travel. It is the same fix the bass fret hand needed. `_ease_wrist` models the
+new curve as smoothstep, which is exactly what auto-clamped handles give between
+two keys of equal value — every dwell, and the top of every arc.
+
+Measured over the whole reach take, per hand per frame, how far the deepest
+fingertip is below the key surface under it: worst **−31.4 mm → −12.1 mm**, and
+summed over every frame **12.3 m → 4.4 m** (−64%; the demo, which barely
+travels, still improves −62%). Mid-leap every fingertip now sits 25–40 mm clear
+of the keys. The wrist arrives at 3 mm/frame instead of 91. Onset contact is
+unchanged to the hundredth of a millimetre (1.55 mm mean on the reach take,
+1.87 on the demo — the same wide-chord compromises as before), the strict
+wrist-ROM check still passes (26.6° / 47.9° of 60), and total finger-to-finger
+overlap is a third better on the reach take and unchanged on the demo. The cost
+is deliberate and small: the reach take's fingers hold their keys 87% of the
+notated length rather than 91%, which is what releasing a leap early means.
+
+What is left is not travel at all: an idle fingertip hovers at a fixed height
+above the *white* keys, so wherever it happens to sit over a black one it is
+4.5 mm inside it — which is most of the 4.4 m that remains, and a static
+property of the hover pose rather than anything the hand does on its way.
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic

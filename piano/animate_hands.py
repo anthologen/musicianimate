@@ -5,9 +5,13 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
 
   - The armature object's transform carries the wrist: for every chord event
     it is placed so the pressing fingers' knuckles sit over their keys
-    (arriving slightly early, gliding between events with SINE easing),
-    then nudged by _wrist_fit to a placement its fingers can hold within
+    (arriving slightly early, easing in and out of each position), then
+    nudged by _wrist_fit to a placement its fingers can hold within
     their range of motion - the hand moves so the fingers need not contort.
+    Moving between two positions it LIFTS: the wrist and every fingertip
+    not holding a key down rise together over a smooth arc (_travel_lift),
+    so the hand clears the keyboard on its way instead of sliding over it,
+    and a key the hand walks out on is released rather than dragged.
     It also carries a YAW (_event_yaw), turning the hand out toward the arm
     that reaches it, so a hand playing far from its own shoulder does not
     leave the whole diagonal in the wrist. Everything below the wrist is
@@ -265,6 +269,57 @@ IDLE_RETREAT_COST = 0.03     # per m of retreat; cheaper, because a finger
                              # lifting away is the less conspicuous of the two
 IDLE_RETREAT_TUCK = 0.35     # fraction of a retreat also taken out of the reach,
                              # so the digit curls up rather than pointing out
+
+# ...but the KEYS are an obstacle too, and the clearance search only knew about
+# the other fingers. A digit told to give way downward would take the whole
+# retreat and end up 30 mm INSIDE the keybed (the thumb, whose idle pose sits
+# lowest, did this for most of the reach take), which is not clearance, it is
+# just a collision with something the search could not see. So a nudge below the
+# key tops is charged for - steeply enough that any pose out in the air wins,
+# and gradually enough that a digit with nowhere else to go still dips a little
+# rather than crossing a neighbour.
+KEYBED_Z = key_layout.WHITE_H     # top of a white key
+KEYBED_CLEAR = 0.002              # m a nudged digit tries to keep above it
+KEYBED_COST = 0.2                 # per m below that: ~7x the cost of the same
+                                  # retreat taken upward, into free air. Higher
+                                  # (0.5) and a digit boxed in between the thumb
+                                  # and its neighbour on the demo's thumb-under
+                                  # would rather lift 20 mm clear and sweep back
+                                  # down through the finger beside it.
+
+# --- lifting the hand between positions --------------------------------------
+# Between two events the wrist used to glide flat, at the same height it plays
+# at, so the whole hand SLID across the keyboard: idle fingertips hover 7.5 mm
+# over a white key but 4.5 mm UNDER the top of a black one, and a finger still
+# holding its key while the wrist departs (see the note on early release below)
+# was dragged sideways at press depth, straight through the keys it passed.
+#
+# A pianist moving from one position to another lifts off, travels above the
+# keys and comes down onto the next one - the wrist rises and falls in one arc
+# and the fingers ride up with it. So every gap between events gets a LIFT: a
+# smooth hump added to the wrist height and to every fingertip target that is
+# not holding a key down, peaking mid-travel and back to zero on arrival, so the
+# pose at either end is exactly the one the wrist fit chose. Since the hand
+# translates rigidly, the finger poses at the apex are the ones already checked
+# for range of motion and mutual clearance; only the height changes.
+#
+# How high scales with how far the hand goes: a neighbouring chord barely lifts,
+# a leap across the board clears the black keys comfortably.
+TRAVEL_LIFT_MIN = 0.045   # m of travel below which the hand just glides
+TRAVEL_LIFT_FRAC = 0.12   # of the travel distance
+TRAVEL_LIFT_MAX = 0.032   # m; a hand does not fly, and the arm has to follow
+TRAVEL_LIFT_RATE = 0.5    # m/s ceiling on the rise, so a one-frame hop between
+                          # two close positions cannot pop the hand up
+
+# A key still sounding when the wrist leaves for such a move is LET GO of. The
+# wrist departs as late as the hold allows but never later than MIN_TRAVEL
+# before the next event needs it, so in a legato piece with big leaps it is
+# already moving while the key is down; pinning the fingertip to that key then
+# stretches the finger flat and drags its tip through the keyboard for the whole
+# travel. A real hand releases and goes - the key is what stays behind (and with
+# the sustain of a pedalled leap, so does the note). Only leaps that get a lift
+# release early: a hand shuffling between neighbouring positions holds its notes
+# out in full, as before.
 
 
 def _target_y(note, has_black=False):
@@ -633,7 +688,23 @@ def _ease(u):
     return 1.0 - math.cos(max(0.0, min(1.0, u)) * math.pi / 2.0)
 
 
-def _sample(keys, frame):
+def _ease_wrist(u):
+    """The same for the WRIST curves, which are baked BEZIER/AUTO_CLAMPED.
+
+    SINE is one-sided: the hand would leave a position at zero speed and still
+    be accelerating when it got to the next one, then stop dead - the arrival
+    snap the bass hand had (bass_guitar/animate_hands). The wrist path is a
+    travel curve, not an attack, so it eases at BOTH ends; auto-clamped handles
+    go flat wherever a key repeats its neighbour's value (every dwell, and the
+    top of a travel arc), which makes each span a cubic between two horizontal
+    tangents - exactly smoothstep. The finger bones keep SINE: a press has to
+    arrive at speed, and it must stay in step with the key dips.
+    """
+    u = max(0.0, min(1.0, u))
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _sample(keys, frame, ease=_ease):
     """Interpolate a list of (frame, value-tuple) keys the way Blender will."""
     if frame <= keys[0][0]:
         return keys[0][1]
@@ -641,9 +712,18 @@ def _sample(keys, frame):
         return keys[-1][1]
     for (fa, va), (fb, vb) in zip(keys, keys[1:]):
         if fa <= frame <= fb:
-            u = _ease(0.0 if fb <= fa else (frame - fa) / (fb - fa))
+            u = ease(0.0 if fb <= fa else (frame - fa) / (fb - fa))
             return tuple(a + (b - a) * u for a, b in zip(va, vb))
     return keys[-1][1]
+
+
+def _travel_lift(a, b, dt):
+    """How high the hand arcs crossing from wrist target `a` to `b` in `dt` s."""
+    dist = math.hypot(b[0] - a[0], b[1] - a[1])
+    if dist < TRAVEL_LIFT_MIN or dt <= 0.0:
+        return 0.0
+    return min(TRAVEL_LIFT_FRAC * dist, TRAVEL_LIFT_MAX,
+               TRAVEL_LIFT_RATE * dt / 2.0)
 
 
 def _sample_plan(plan, frame):
@@ -739,10 +819,11 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
     `key_target`/`mix` say what the digit wants: a point on a key, the idle pose
     over its own knuckle, or - through the ease either side of a rest - a blend
     of the two. That wish is tried first and kept if it is already clear.
-    Otherwise a grid of sideways slides and retreats around it is searched for
-    the pose that clears its neighbours while straying least, which is how a
-    hand keeps its fingers apart: the free ones move aside and away, the one
-    holding a key does not move at all.
+    Otherwise a grid of sideways slides and retreats around it is searched, in
+    order of how far each strays (stray_cost), for the pose that clears its
+    neighbours while straying least, which is how a hand keeps its fingers
+    apart: the free ones move aside and away, the one holding a key does not
+    move at all, and none of them gives way into the keyboard.
 
     `budget` (0..1) is how far that search may stray - near zero for a finger on
     its key, whose grid then collapses to the wish itself. `obstacles` are
@@ -760,28 +841,54 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
                     key_target[2] + retreat)
         return tuple(k + (i - k) * mix for k, i in zip(key_target, idle))
 
+    def stray_cost(retreat, slide):
+        """What this nudge costs before any clearance it buys is counted.
+
+        Sideways and (upward) away are the ordinary currencies. The third term
+        is the KEYS: how far the nudge would push the digit below the key tops,
+        and below where it wanted to be anyway - a digit ON a key is not diving,
+        it is playing. Dodging a neighbour by burying a finger 30 mm inside the
+        keyboard, which is what the thumb (lowest of the five) used to do for
+        most of the reach take, is no clearance at all, so it is charged for:
+        steeply enough that any pose out in the air wins, gradually enough that
+        a digit truly boxed in dips a millimetre rather than crossing.
+        """
+        sunk = max(0.0, min(KEYBED_Z + KEYBED_CLEAR, wish(slide)[2])
+                   - wish(slide, retreat)[2])
+        return (IDLE_SLIDE_COST * abs(slide) + IDLE_RETREAT_COST * abs(retreat)
+                + KEYBED_COST * sunk)
+
+    # Searched CHEAPEST FIRST, so the wish itself (cost 0) is always tried
+    # before any nudge and the first pose the joint cage allows is the nearest
+    # legal one. Walked in plain grid order instead, a digit whose own wish the
+    # cage refused took whichever corner of the search came first - the full
+    # downward nudge - and a digit with nothing in its way at all did the same,
+    # which is how the thumb ended up inside the keybed with no neighbour
+    # anywhere near it.
+    nudges = sorted((stray_cost(retreat, slide), retreat, slide)
+                    for retreat in _grid(RETREAT_STEP, budget * RETREAT_MAX,
+                                         True)
+                    for slide in _grid(SLIDE_STEP, budget * SLIDE_MAX, True))
+
     best, fallback = None, None
-    for retreat in _grid(RETREAT_STEP, budget * RETREAT_MAX, True):
-        for slide in _grid(SLIDE_STEP, budget * SLIDE_MAX, True):
-            target = wish(slide, retreat)
-            pose = _pose_from_target(finger, knuckle, target, dist_flex)
-            if not _in_cage(finger, *pose, dist_flex):
-                continue
-            if fallback is None:
-                fallback = target
-            if not obstacles:
-                return target
-            chain = _finger_chain(knuckle, FINGERS[finger]["lengths"], *pose,
-                                  dist_flex)
-            clear = min(_chain_clearance(finger, chain, g, oc, wrist)
-                        for g, oc in obstacles)
-            if clear >= IDLE_CLEAR_TARGET and slide == 0.0 and retreat == 0.0:
-                return target
-            score = (min(clear, IDLE_CLEAR_TARGET)
-                     - IDLE_SLIDE_COST * abs(slide)
-                     - IDLE_RETREAT_COST * abs(retreat))
-            if best is None or score > best[0]:
-                best = (score, target)
+    for cost, retreat, slide in nudges:
+        target = wish(slide, retreat)
+        pose = _pose_from_target(finger, knuckle, target, dist_flex)
+        if not _in_cage(finger, *pose, dist_flex):
+            continue
+        if fallback is None:
+            fallback = target
+        if not obstacles:
+            return target
+        chain = _finger_chain(knuckle, FINGERS[finger]["lengths"], *pose,
+                              dist_flex)
+        clear = min(_chain_clearance(finger, chain, g, oc, wrist)
+                    for g, oc in obstacles)
+        if clear >= IDLE_CLEAR_TARGET and cost <= 0.0:
+            return target
+        score = min(clear, IDLE_CLEAR_TARGET) - cost
+        if best is None or score > best[0]:
+            best = (score, target)
     if best is not None:
         return best[1]
     # Nothing in the grid is inside the cage: a key the hand cannot really hold.
@@ -851,15 +958,19 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         arm_obj.keyframe_insert(data_path="rotation_euler", frame=to_frame(t))
         wrist_keys.append((to_frame(t), target))
 
+    # When the wrist leaves each event and when it has to be at the next one.
+    # Worked out for the whole take up front because the finger plans below need
+    # it too: a note whose key the wrist walks out on is released rather than
+    # dragged (see TRAVEL_LIFT_MIN).
+    sched = []
     prev_t = None
-    for i, (ev, target) in enumerate(zip(events, targets)):
+    for i, ev in enumerate(events):
         arrive = ev["t"] - ARRIVE_LEAD
         if prev_t is not None:
             # In fast passages give at least 60% of the window to travel,
             # so the wrist flows instead of hop-and-waiting.
             arrive = max(arrive, prev_t + 0.6 * (ev["t"] - prev_t))
         arrive = max(arrive, 0.0)
-        key_root(arrive, target)
         # Depart as late as the hold allows, but always leave the wrist at
         # least MIN_TRAVEL of glide to the next event - a dwell followed by
         # a near-instant hop reads as a lurch.
@@ -868,11 +979,47 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         if i + 1 < len(events):
             depart = min(depart, events[i + 1]["t"] - ARRIVE_LEAD - MIN_TRAVEL)
         depart = max(depart, ev["t"])
-        if depart > arrive + 0.02:
+        # `leave` is when the wrist's last key at this event sits - the moment
+        # it starts moving on, which is the departure if it dwelled here at all
+        # and its arrival if the passage is too fast for a dwell.
+        dwell = depart > arrive + 0.02
+        leave = depart if dwell else arrive
+        sched.append((arrive, depart, leave))
+        prev_t = leave
+
+    # The arc over each gap, as (frame, (height above the glide,)) keys: zero at
+    # both ends and its peak halfway across, so it adds nothing to the placement
+    # the wrist fit chose at either event. Sampled with the same easing as the
+    # wrist itself, which is what makes it a smooth rise and fall rather than a
+    # hop; the z key at the apex is all Blender needs to bake it (x and y keep
+    # their single span, so the travel itself is unchanged).
+    arc_keys = [(frame_start, (0.0,))]
+    lifts = [0.0] * len(events)
+    # Every travel also gets its halfway point posed (below), lift or no lift.
+    # The fingers are keyed at the wrist's own key times, so they agree with it
+    # exactly there and drift in between - and a digit still holding a key while
+    # the wrist walks off is exactly where that drift shows.
+    travel_mids = []
+
+    for i, (ev, target) in enumerate(zip(events, targets)):
+        arrive, depart, leave = sched[i]
+        key_root(arrive, target)
+        if leave > arrive:
             key_root(depart, target)
-            prev_t = depart
-        else:
-            prev_t = arrive
+        if i + 1 >= len(events):
+            continue
+        nxt = sched[i + 1][0]
+        top = to_frame(0.5 * (leave + nxt))
+        travel_mids.append(top)
+        lifts[i] = _travel_lift(target, targets[i + 1], nxt - leave)
+        if lifts[i] <= 0.0:
+            continue
+        mid = tuple((p + q) / 2.0 for p, q in zip(target, targets[i + 1]))
+        arm_obj.location = (mid[0], mid[1], mid[2] + lifts[i])
+        arm_obj.keyframe_insert(data_path="location", index=2, frame=top)
+        arc_keys += [(to_frame(leave), (0.0,)), (top, (lifts[i],)),
+                     (to_frame(nxt), (0.0,))]
+    arc_keys.sort(key=lambda k: k[0])
 
     # --- fingers -----------------------------------------------------------
     # Each finger first gets a PLAN: where its fingertip should be at a handful
@@ -886,10 +1033,10 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     # be clamped against each other: a release tail must never land on top of
     # the next note's approach or press.
     per_finger = {}
-    for ev in events:
+    for i, ev in enumerate(events):
         has_black = any(n["is_black"] for n in ev["notes"])
         for n in ev["notes"]:
-            per_finger.setdefault(n["finger"], []).append((n, has_black))
+            per_finger.setdefault(n["finger"], []).append((n, has_black, i))
 
     def attack_frames(note):
         vel_t = max(0, min(127, note["velocity"])) / 127.0
@@ -916,14 +1063,21 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     for f, items in per_finger.items():
         plan = plans[f]
         prev_off = None
-        for i, (n, has_black) in enumerate(items):
+        for i, (n, has_black, ev_i) in enumerate(items):
             press_z = _press_z(n["is_black"], press_depth_white,
                                press_depth_black)
             key = (n["x"], _target_y(n, has_black), press_z)
             up = (key[0], key[1], key[2] + HOVER_LIFT)
 
             on_frame = to_frame(n["start"])
-            off_frame = max(on_frame, to_frame(n["end"]))
+            # A note the hand leaves for another position is let go of when the
+            # wrist goes, not when the MIDI says: held any longer, the fingertip
+            # is pinned to a key the hand is no longer over and ploughs through
+            # everything between the two (see TRAVEL_LIFT_MIN).
+            off_t = n["end"]
+            if lifts[ev_i] > 0.0:
+                off_t = max(n["start"], min(off_t, sched[ev_i][1]))  # depart
+            off_frame = max(on_frame, to_frame(off_t))
             hover_frame = max(frame_start, on_frame - attack_frames(n))
             if prev_off is not None:
                 hover_frame = max(hover_frame, prev_off + 0.5)
@@ -954,7 +1108,7 @@ def animate_hand(arm_obj, notes, fps, frame_start,
                 plan.append((release_frame, up, DIST_FLEX_HOVER, 1.0)
                             if soon else (release_frame,) + IDLE)
             prev_off = off_frame
-            last_frame = max(last_frame, off_frame + release_frames)
+            last_frame = max(last_frame, to_frame(n["end"]) + release_frames)
         plan.append((plan[-1][0] + idle_gap,) + IDLE)
 
     # --- resolve the whole hand, frame by frame ----------------------------
@@ -968,9 +1122,18 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     wrist_keys.sort(key=lambda k: k[0])
     moments = sorted({frame_start}
                      | {fr for fr, _loc in wrist_keys}
+                     | {fr for fr, _lift in arc_keys}
+                     | set(travel_mids)
                      | {e[0] for plan in plans.values() for e in plan})
     for frame in moments:
-        wx, wy, wz, yaw = _sample(wrist_keys, frame)
+        wx, wy, wz, yaw = _sample(wrist_keys, frame, _ease_wrist)
+        # Mid-travel the whole hand rides up its arc: the wrist and every
+        # fingertip that is free to go with it (`give`, 0 only while a key is
+        # actually held down) are raised by the same amount, so the hand simply
+        # translates - the poses at the top of the arc are the ones already
+        # solved for range of motion and mutual clearance, just higher up.
+        lift = _sample(arc_keys, frame, _ease_wrist)[0]
+        wz += lift
         # The whole hand is solved in ITS OWN frame (_hand_xy): the wrist at the
         # origin with the fingers along +y, which is the frame the bones are
         # posed in and the one every offset in build_hands.FINGERS is written
@@ -983,24 +1146,34 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             target, flex, mix, give = _sample_plan(plans[f], frame)
             if target is not None:
                 target = _hand_xy(target, (wx, wy, wz), yaw)
-            digits.append((max(mix, HOVER_GIVE * give), f, target, flex, mix))
+                target = (target[0], target[1], target[2] + lift * give)
+            digits.append((max(mix, HOVER_GIVE * give), f, target, flex, mix,
+                           give))
         # Least free first: the finger holding a key down is placed exactly
         # where its key is and becomes an obstacle, then the ones with a little
         # give, then the fully idle - so what has to move is what can.
         placed = []
-        for budget, f, target, flex, mix in sorted(digits,
-                                                   key=lambda d: d[0]):
-            target = _solve_clear(f, knuckles[f], mirror, wrist, hover_z,
+        for budget, f, target, flex, mix, give in sorted(digits,
+                                                         key=lambda d: d[0]):
+            target = _solve_clear(f, knuckles[f], mirror, wrist,
+                                  hover_z + lift * give,
                                   flex, placed, target, mix, budget)
             pose = _pose_from_target(f, knuckles[f], target, flex)
             _pose_finger(pbones, f, *pose, flex, frame)
             placed.append((f, _finger_chain(knuckles[f], FINGERS[f]["lengths"],
                                             *pose, flex)))
 
+    # Two easings, for two kinds of motion (see _ease_wrist): the wrist travels,
+    # so it eases at both ends and arcs smoothly over the top of a leap; the
+    # fingers strike, so they keep the one-sided SINE ramp that lands a
+    # fingertip on its key at speed, in step with the key dips.
     for fcurve in _iter_action_fcurves(arm_obj.animation_data
                                        and arm_obj.animation_data.action):
+        travel = fcurve.data_path in ("location", "rotation_euler")
         for kp in fcurve.keyframe_points:
-            kp.interpolation = 'SINE'
+            kp.interpolation = 'BEZIER' if travel else 'SINE'
+            if travel:
+                kp.handle_left_type = kp.handle_right_type = 'AUTO_CLAMPED'
 
     return last_frame
 
