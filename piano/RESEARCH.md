@@ -235,6 +235,54 @@ Sources: [Normal Active ROM of the Index–Little Fingers (Thieme, 2024)](https:
 [StatPearls: Metacarpophalangeal joints](https://www.ncbi.nlm.nih.gov/books/NBK538428/);
 Garrett (1971) hand anthropometry / ANSUR digit breadths.
 
+## The seated player: where the bench puts the arms
+
+`build_pianist.py` sits the same blocky stand-in the other four players use
+(Drillis & Contini / Winter segment fractions, H = 1.75 m) on a bench at the
+piano, and `animate_pianist.py` points its arm IK at the two hand rigs. Almost
+everything about that figure is decided by one number.
+
+**The bench height sets the wrist.** The piano hand rigs are *axis-locked*:
+`animate_hands` keys only their location, so the fingers always run along +y and
+the palm always faces down. A hand that cannot rotate cannot meet the forearm
+halfway — so the wrist angle is entirely the arm's problem, and the only way to
+keep it straight is to bring the forearm in level with the keys. Standard
+ergonomics get this for free: a 0.50 m bench under a 0.71 m key surface puts the
+seated shoulders 0.59 m above the seat, from which the upper arm hangs nearly
+vertically and the forearm runs out almost horizontally. Measured on the demo,
+the wrists sit 5° (L) and 27° (R, at full cross-body reach) off the forearm.
+Raise or lower the bench and the forearm starts diving onto the keys instead;
+`animate_pianist._check_wrist_pose` fails the build past 60°, because no IK limit
+can catch it (the hand is not a joint the rig solves).
+
+**The elbow is a trade, not a free parameter.** `ELBOW_BEND` pulls the elbow off
+the shoulder→wrist line down and back, which is what hangs the upper arm. Its
+small *outboard* term is contested: this demo's right hand plays as far in as the
+player's own centre line, so that arm reaches across the body, and too little
+outboard push cuts the forearm ~12 mm into the torso while too much opens the
+wrist and flares the elbow 0.34 m off centre. The settled value has the forearm
+resting *against* the ribs (~5 mm) at the worst frame — which is what it does in
+life.
+
+**A torso is not one block.** No elbow-pole angle fixes a forearm that crosses in
+front of the abdomen: the elbow is not what clips. The fix is anatomical — a
+ribcage above the waist and a narrower, set-back abdomen below it, which is
+exactly the clearance a cross-body reach needs.
+
+**Solve the IK poles, don't tune them.** Blender measures an IK pole angle from a
+reference frame that depends on the chain root's roll, so `_solve_pole_angle`
+sweeps the angle and keeps whatever reproduces the built rest pose (to ~1 mm),
+rather than shipping four hand-tuned constants that would silently twist the
+limbs if the proportions or the seat ever changed. Sweep **−180…180**: Blender
+hard-clamps `pole_angle` to ±π, so a 0…360 search quietly pins half the circle to
+the same pose and finds a false minimum.
+
+Sources: Drillis & Contini (1966) body-segment parameters; Winter,
+*Biomechanics and Motor Control of Human Movement*, anthropometric tables
+(seated acromial height ≈ 0.59 m and seated stature ≈ 0.92 m above the seat, at
+H = 1.75 m). The 0.71 m key height is `build_piano`'s own geometry; the 0.50 m
+bench is the standard piano-bench height that pairs with it.
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic
