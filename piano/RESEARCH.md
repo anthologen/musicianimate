@@ -277,6 +277,55 @@ limbs if the proportions or the seat ever changed. Sweep **−180…180**: Blend
 hard-clamps `pole_angle` to ±π, so a 0…360 search quietly pins half the circle to
 the same pose and finds a false minimum.
 
+**The ends of the board are out of reach sitting up — so lean.** The keyboard is
+1.25 m wide and the arm is 0.58 m from shoulder to wrist, so an upright spine
+cannot get to either end of it: on `make_reach_piano_midi.py`'s stress piece
+(A0 and C8, alternated and together) the right arm came up **40 mm short** for
+63% of the take and the hand rig simply floated off the end of it — a failure no
+joint limit catches, because a stretched IK chain is not an illegal pose, it is
+an unreachable target. Pianists answer this by leaning in from the hips, and so
+does `_reach_lean`: per body keyframe it steps the forward lean up until *both*
+wrists are inside `REACH_MARGIN` of the arm's length (leaning by θ swings the
+shoulder forward `lever·sinθ` and drops it `lever·(1−cosθ)`; the drop matters,
+because the keys are already well below the shoulder, so it is stepped rather
+than solved in closed form). The reach take needs 0…17°, the demo needs 0° and
+is unchanged.
+
+**What a lean cannot fix is the wrist — the HAND has to turn.** Leaning got the
+arm onto the key but left 68° (R) / 48° (L) of wrist, over the 60° cap, and no
+body pose takes that out: at full stretch the forearm *is* the shoulder→hand
+line, so it arrives diagonally while a square hand insists on pointing +y. A
+pianist turns the hand out to follow the arm, and `animate_hands` now does the
+same. The wrist target carries a **yaw** as well as a position (`_event_yaw`):
+`HAND_YAW_FRAC` of the angle the arm comes in on — `atan2` of the hand's offset
+from *its own shoulder* over `ARM_DEPTH`, the shoulder's setback behind the keys
+— capped at `HAND_YAW_MAX` = 25°. The wrist supplies the remainder, which is the
+real division of labour: a hand that turned the whole way would be pointing its
+fingers along the keys instead of across them.
+
+Everything below the wrist is then solved in **the hand's own frame**
+(`_hand_xy`): the wrist at the origin with the fingers along +y, which is the
+frame `build_hands.FINGERS` and the bone poses were always written in. Only the
+keys have to be rotated into it. Heights are untouched (the yaw is about Z), so
+the reach, hover and press geometry are unchanged — and at yaw 0 every formula
+reduces to the square-handed one it replaced, which is worth keeping true as a
+check. Two places needed real generalizing: the splay clamp slides the wrist
+along the hand's own x (sliding across the *keyboard* would change how far the
+fingers reach as well as how far they splay), and `_event_root_target` sets the
+wrist a *rotated* knuckle-plus-reach offset back from each key.
+
+The one thing a yaw costs is **depth**: meeting a wide grip at an angle racks
+its outer fingers to different depths along the keys, sin(yaw) times the width
+of the grip, which they must find out of their own length on top of whatever the
+voicing already asks. So each event's yaw is capped at what its own width can
+afford (`YAW_SPREAD` = 8 mm) — a pianist squares up for a stretch and angles the
+hand for single notes, which is exactly what the ends of the keyboard are played
+with. Measured: wrists 68°/48° → **48°/27°**, inside the cap, so the reach take
+now passes `strict=True`; the demo's cross-body right hand improved 28° → 18°;
+contact at A0/C8 is 0.01 mm mean, and chord contact is within half a millimetre
+of the square-handed solve (demo 0.36 → 0.54 mm mean). `animate_pianist`'s
+`strict=False` remains as an escape hatch for pieces that still ask too much.
+
 Sources: Drillis & Contini (1966) body-segment parameters; Winter,
 *Biomechanics and Motor Control of Human Movement*, anthropometric tables
 (seated acromial height ≈ 0.59 m and seated stature ≈ 0.92 m above the seat, at

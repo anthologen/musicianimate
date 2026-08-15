@@ -3,11 +3,15 @@
 Consumes the output of ``python -m piano.fingering`` (per-note hand, finger
 and fingertip target) and keyframes the armatures built by build_hands.py:
 
-  - The armature object's location carries the wrist: for every chord event
+  - The armature object's transform carries the wrist: for every chord event
     it is placed so the pressing fingers' knuckles sit over their keys
     (arriving slightly early, gliding between events with SINE easing),
     then nudged by _wrist_fit to a placement its fingers can hold within
     their range of motion - the hand moves so the fingers need not contort.
+    It also carries a YAW (_event_yaw), turning the hand out toward the arm
+    that reaches it, so a hand playing far from its own shoulder does not
+    leave the whole diagonal in the wrist. Everything below the wrist is
+    then solved in the hand's own frame (_hand_xy).
   - Finger bones are driven by closed-form two-link IK in the vertical
     plane through the knuckle: the proximal bone pitches, the middle joint
     flexes, the proximal z-rotation supplies sideways reach (capped at the
@@ -78,7 +82,7 @@ RELAXED = (0.45, 0.70, 0.40)  # prox/mid/dist downward flexion at rest
 # 57 deg MAX_YAW the IK splayed fingers up to 48 deg on the demo, which now that
 # the cage exists would simply be clamped by the constraint (fingertip sliding
 # off its key) and in any case reads as a finger swinging under its neighbours.
-# So the cap lives in the IK, and _splay_clamp_x below moves the WRIST so the
+# So the cap lives in the IK, and _splay_clamp below moves the WRIST so the
 # finger rarely has to reach that far - which is what a pianist actually does,
 # gliding the hand along the keyboard rather than fanning the fingers.
 # The thumb is not a finger: its CMC saddle joint carries 45-60 deg of palmar/
@@ -102,6 +106,42 @@ BLACK_KEY_LIFT = 0.018
 # target level with (or behind) the knuckle cannot demand an infinite reach;
 # matches the clamp inside _finger_ik.
 MIN_REACH_Y = 0.012
+
+# --- hand yaw ----------------------------------------------------------------
+# The hand TURNS OUT to meet its own arm. Held square to the keys - fingers
+# always along +y, which is how this rig was originally solved - the hand is
+# fine in front of its own shoulder and increasingly wrong away from it: the
+# forearm arrives diagonally, and since the hand will not follow, the difference
+# is left in the wrist. At the ends of an 88-key board that reached 68 deg,
+# past any human wrist, and no arm or body pose could take it out (at full
+# stretch the forearm IS the shoulder-to-hand line).
+#
+# So the wrist target carries a yaw as well as a position, and every finger is
+# solved in the hand's own frame. The angle is the direction the arm comes from
+# - atan2 of the hand's offset from its shoulder over how far the shoulder sits
+# behind the keys - taken only partway (the wrist supplies the rest, as it does
+# in life) and capped at a comfortable turn.
+HAND_YAW_FRAC = 0.7
+HAND_YAW_MAX = math.radians(25.0)
+ARM_DEPTH = 0.26        # m the shoulder sits behind the wrists at the keyboard
+SHOULDER_DX = 0.227     # m from the player's centre line to either shoulder
+#                         (half biacromial breadth at H = 1.75; the same figure
+#                         build_pianist seats at the keyboard). Kept here rather
+#                         than imported: the hands must animate with no player
+#                         in the scene, and any seated adult is within a cm or
+#                         two of this.
+HOME_X = key_layout.key_x(60)   # the bench is centred on middle C
+
+# A yawed hand meets a wide grip at an angle, which racks its outer fingers to
+# DIFFERENT depths along the keys - sin(yaw) times the width of the grip - and
+# they have to find that difference out of their own length, on top of whatever
+# the voicing already asks of them. Which is why a pianist squares the hand up
+# for a big stretch and only angles it for what one finger, or a close grip, can
+# cover: the yaw of an event is capped at the angle its own width can afford.
+# Measured on the demo, 8 mm keeps chord contact within half a millimetre of the
+# square-handed solve while leaving single notes - which is what the ends of the
+# keyboard are played with - free to turn the full amount.
+YAW_SPREAD = 0.008      # m of depth spread across a grip a yaw may impose
 
 # How far out along its own length each finger is expected to reach for its key,
 # which is what sets where the wrist sits behind the keys. At 1.0 the finger
@@ -237,18 +277,49 @@ def _target_y(note, has_black=False):
     return note["y"]
 
 
-def _wrist_x_for(note, mirror):
-    """The wrist x that puts this digit's fingertip on its key.
-
-    A finger works straight ahead of its knuckle, so the wrist simply sits its
-    knuckle offset away. The thumb does not: it plays turned OUT to the radial
-    side (THUMB_IDLE_X), so for a thumb note the hand sits that much further
-    along the keyboard - which is also what keeps the thumb's column from lying
-    along the index finger, the two being rooted a millimetre apart.
+def _digit_offset_x(note, mirror):
+    """Where this digit's fingertip sits ACROSS the hand, in the hand's own
+    frame: at its knuckle for a finger, and for the thumb turned OUT to the
+    radial side (THUMB_IDLE_X), which is both where a thumb rests and what keeps
+    its column from lying along the index finger, the two being rooted a
+    millimetre apart. The wrist is then placed this much the other way.
     """
     kx = FINGERS[note["finger"]]["knuckle"][0]
     out = mirror * THUMB_IDLE_X if note["finger"] == 1 else 0.0
-    return note["x"] + out - kx * mirror
+    return kx * mirror - out
+
+
+def _hand_xy(point, wrist, yaw):
+    """A world point in the hand's own frame: the wrist at the origin and +y
+    along the fingers, so a knuckle sits at exactly its build_hands offset and
+    every finger solve reads the same as it did before the hand could turn.
+
+    Only x and y rotate - the yaw is about Z - so the z that comes back is still
+    the world height, which is what the reach/hover geometry is written in.
+    """
+    dx, dy = point[0] - wrist[0], point[1] - wrist[1]
+    c, s = math.cos(yaw), math.sin(yaw)
+    return (c * dx + s * dy, c * dy - s * dx, point[2])
+
+
+def _event_yaw(event, mirror):
+    """How far the hand turns out to meet its arm for this event (radians,
+    positive = counter-clockwise seen from above).
+
+    The arm arrives from the shoulder, so the hand turns toward it by the same
+    reasoning a pianist's does: partway (HAND_YAW_FRAC) toward the line the
+    forearm comes in on, never past HAND_YAW_MAX, and less than that for a grip
+    wide enough that the angle would rack its fingers to different depths
+    (YAW_SPREAD).
+    """
+    xs = [n["x"] for n in event["notes"]]
+    centre, span = (min(xs) + max(xs)) / 2.0, max(xs) - min(xs)
+    shoulder = HOME_X + mirror * SHOULDER_DX
+    cap = HAND_YAW_MAX
+    if span > 1e-6:
+        cap = min(cap, math.asin(min(1.0, YAW_SPREAD / span)))
+    yaw = -HAND_YAW_FRAC * math.atan2(centre - shoulder, ARM_DEPTH)
+    return max(-cap, min(cap, yaw))
 
 
 def _splay_cap(finger):
@@ -290,7 +361,8 @@ def _finger_ik(dx, dy, dv, lengths, dist_flex, splay_cap=MAX_YAW):
 
 
 def _finger_chain(knuckle, lengths, yaw, prox, mid, dist_flex):
-    """World-space [knuckle, PIP, DIP, tip] for one posed finger.
+    """[knuckle, PIP, DIP, tip] for one posed finger, in whatever frame the
+    knuckle was given in (the piano solves in the hand's own - see _hand_xy).
 
     Only the proximal bone carries the sideways rotation (see _pose_finger), so
     the whole chain lies in the vertical plane the knuckle's yaw picks out.
@@ -327,14 +399,14 @@ def _seg_dist(p1, q1, p2, q2):
 
 
 def _in_palm(point, wrist):
-    """Whether a world point falls inside the palm box."""
+    """Whether a point falls inside the palm box, both in the wrist's frame."""
     return all(abs(p - (w + c)) <= h / 2.0
                for p, w, c, h in zip(point, wrist, PALM_CENTRE, PALM_SIZE))
 
 
 def _chain_clearance(fa, ca, fb, cb, wrist):
     """Surface clearance (m, negative = interpenetrating) between two posed
-    finger chains, each [knuckle, PIP, DIP, tip] in world space.
+    finger chains, each [knuckle, PIP, DIP, tip] in the wrist's own frame.
 
     Phalanges that meet inside the palm are skipped (see the notes above): the
     thumb's column is rooted a millimetre across from the index knuckle and
@@ -366,27 +438,31 @@ def _group_events(notes):
     return events
 
 
-def _event_root_target(event, mirror):
-    """Wrist position placing the event's pressing knuckles over their keys.
+def _event_root_target(event, mirror, yaw):
+    """Wrist position placing the event's pressing knuckles over their keys,
+    with the hand turned out by `yaw`.
 
-    Uses the midrange (not the mean) of the per-finger requirements: in a
+    Each digit wants the wrist one rotated knuckle-plus-reach offset back from
+    its key. Uses the midrange (not the mean) of those requirements: in a
     stretched chord the outer fingers have the least reach to spare, so the
     residual is split between them instead of letting the comfortable
     middle fingers drag the wrist off-center.
     """
     has_black = any(n["is_black"] for n in event["notes"])
+    c, s = math.cos(yaw), math.sin(yaw)
     xs, ys = [], []
     for n in event["notes"]:
         spec = FINGERS[n["finger"]]
         _kx, ky, _kz = spec["knuckle"]
-        reach = REACH_FRAC * sum(spec["lengths"])
-        xs.append(_wrist_x_for(n, mirror))
-        ys.append(_target_y(n, has_black) - (ky + reach))
+        ox = _digit_offset_x(n, mirror)
+        oy = ky + REACH_FRAC * sum(spec["lengths"])
+        xs.append(n["x"] - (c * ox - s * oy))
+        ys.append(_target_y(n, has_black) - (s * ox + c * oy))
     z = HOVER_Z + (BLACK_KEY_LIFT if has_black else 0.0)
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, z)
 
 
-def _splay_clamp_x(event, tgt, mirror):
+def _splay_clamp(event, tgt, mirror, yaw):
     """Slide one wrist target sideways until every pressing finger can reach
     its key within the knuckle's anatomical splay (see FINGER_MCP_SPLAY).
 
@@ -395,24 +471,29 @@ def _splay_clamp_x(event, tgt, mirror):
     left unbounded it asks a finger to deviate 40-50 deg sideways, which no
     knuckle does (and which the build-time LIMIT_ROTATION cage would clamp,
     sliding the fingertip off its key). Each pressing finger admits a window of
-    wrist x whose width is tan(cap) * its knuckle-to-key distance; the target is
-    clamped into the intersection, so the glide survives wherever the fingers
-    can absorb it and the WRIST does the rest of the reaching. A chord too wide
-    for any one window (empty intersection) takes the window midpoint, splitting
-    the residual between its outer fingers - the same compromise
+    wrist travel whose width is tan(cap) * its knuckle-to-key distance; the
+    target is clamped into the intersection, so the glide survives wherever the
+    fingers can absorb it and the WRIST does the rest of the reaching. A chord
+    too wide for any one window (empty intersection) takes the window midpoint,
+    splitting the residual between its outer fingers - the same compromise
     _event_root_target makes with its midrange.
+
+    "Sideways" is ACROSS THE HAND, not across the keyboard: sliding along the
+    hand's own x is what changes a finger's splay without also changing how far
+    it has to reach, so with the hand turned out the slide follows it.
     """
     has_black = any(n["is_black"] for n in event["notes"])
     lo, hi = float("-inf"), float("inf")
     for n in event["notes"]:
         _kx, ky, _kz = FINGERS[n["finger"]]["knuckle"]
-        dy = max(_target_y(n, has_black) - (tgt[1] + ky), MIN_REACH_Y)
-        span = math.tan(_splay_cap(n["finger"])) * dy
-        centre = _wrist_x_for(n, mirror)
-        lo = max(lo, centre - span)
-        hi = min(hi, centre + span)
-    x = (lo + hi) / 2.0 if lo > hi else max(lo, min(hi, tgt[0]))
-    return (x, tgt[1], tgt[2])
+        tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
+        dx = tx - _digit_offset_x(n, mirror)
+        span = math.tan(_splay_cap(n["finger"])) * max(ty - ky, MIN_REACH_Y)
+        lo = max(lo, dx - span)
+        hi = min(hi, dx + span)
+    slide = (lo + hi) / 2.0 if lo > hi else max(lo, min(hi, 0.0))
+    return (tgt[0] + slide * math.cos(yaw),
+            tgt[1] + slide * math.sin(yaw), tgt[2])
 
 
 def _tip_miss(dx, dy, dv, lengths, dist_flex, splay_cap):
@@ -430,7 +511,7 @@ def _tip_miss(dx, dy, dv, lengths, dist_flex, splay_cap):
     return math.dist((h * math.sin(yaw), h * math.cos(yaw), v), (dx, dy, dv))
 
 
-def _event_pose_cost(event, tgt, mirror, press_white, press_black):
+def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
     """How badly a wrist placement serves this event's pressing fingers.
 
     Two things go wrong, and they pull in opposite directions:
@@ -454,8 +535,8 @@ def _event_pose_cost(event, tgt, mirror, press_white, press_black):
         spec = FINGERS[n["finger"]]
         kx, ky, kz = spec["knuckle"]
         press_z = _press_z(n["is_black"], press_white, press_black)
-        dx = n["x"] - (tgt[0] + kx * mirror)
-        dy = _target_y(n, has_black) - (tgt[1] + ky)
+        tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
+        dx, dy = tx - kx * mirror, ty - ky
         cap = _splay_cap(n["finger"])
         for dv, flex in ((tgt[2] + kz - press_z, DIST_FLEX_PRESS),
                          (tgt[2] + kz - (press_z + HOVER_LIFT),
@@ -469,7 +550,7 @@ def _event_pose_cost(event, tgt, mirror, press_white, press_black):
     return cost
 
 
-def _wrist_fit(events, targets, mirror, press_white, press_black):
+def _wrist_fit(events, targets, yaws, mirror, press_white, press_black):
     """Nudge each smoothed wrist target to a placement the fingers can hold.
 
     The smoothed path says where the hand would LIKE to be; this asks what its
@@ -485,18 +566,19 @@ def _wrist_fit(events, targets, mirror, press_white, press_black):
     ordinary single notes and close chords score zero and do not move at all.
     """
     out = []
-    for ev, tgt in zip(events, targets):
-        base = _splay_clamp_x(ev, tgt, mirror)
-        best = (_event_pose_cost(ev, base, mirror, press_white, press_black),
-                base)
+    for ev, tgt, yaw in zip(events, targets, yaws):
+        base = _splay_clamp(ev, tgt, mirror, yaw)
+        best = (_event_pose_cost(ev, base, mirror, yaw, press_white,
+                                 press_black), base)
         if best[0] > 0.0:
             steps = int(WRIST_Y_RANGE / WRIST_Y_STEP)
             for i in range(-steps, steps + 1):
                 dy = i * WRIST_Y_STEP
                 z = tgt[2]
                 while z >= MIN_WRIST_Z - 1e-9:
-                    cand = _splay_clamp_x(ev, (tgt[0], tgt[1] + dy, z), mirror)
-                    cost = (_event_pose_cost(ev, cand, mirror, press_white,
+                    cand = _splay_clamp(ev, (tgt[0], tgt[1] + dy, z), mirror,
+                                        yaw)
+                    cost = (_event_pose_cost(ev, cand, mirror, yaw, press_white,
                                              press_black)
                             + WRIST_REG * (dy * dy + (tgt[2] - z) ** 2))
                     if cost < best[0]:
@@ -529,7 +611,7 @@ def _smooth_targets(events, targets, sigma=SMOOTH_SIGMA):
 
     smoothed = []
     for i in range(len(events)):
-        acc = [0.0, 0.0, 0.0]
+        acc = [0.0] * len(targets[i])
         wsum = 0.0
         for j, tgt in enumerate(targets):
             if abs(j - i) > 3 * sigma or segment[j] != segment[i]:
@@ -538,7 +620,7 @@ def _smooth_targets(events, targets, sigma=SMOOTH_SIGMA):
             # it is played slowly or fast. Chords weigh more than single
             # notes: stretched voicings need near-exact placement.
             w = math.exp(-0.5 * ((j - i) / sigma) ** 2) * len(events[j]["notes"])
-            for k in range(3):
+            for k in range(len(acc)):
                 acc[k] += w * tgt[k]
             wsum += w
         smoothed.append(tuple(a / wsum for a in acc))
@@ -734,17 +816,28 @@ def animate_hand(arm_obj, notes, fps, frame_start,
 
     events = _group_events(notes)
     if not events:
+        arm_obj.rotation_euler = (0.0, 0.0, 0.0)
         for f in FINGERS:
             _relax_finger(pbones, f, frame_start)
         return frame_start
 
-    # --- wrist (armature object) location ---------------------------------
+    # --- wrist (armature object) placement ---------------------------------
     # Wrist path: per-event ideal placement, smoothed into a glide, then pulled
     # back inside what the fingers can anatomically do (sideways splay, then
     # reach) - the hand moves so the fingers do not have to contort.
-    targets = _wrist_fit(events, _smooth_targets(
-        events, [_event_root_target(ev, mirror) for ev in events]),
-        mirror, press_depth_white, press_depth_black)
+    #
+    # A placement is (x, y, z, yaw): where the wrist sits AND how far the hand
+    # is turned out to meet its arm (_event_yaw). The yaw goes through the same
+    # smoothing as the position - they must travel together, or the hand would
+    # snap round between two events it glides between - and the fit then re-scores
+    # each event's fingers in the frame that yaw puts them in.
+    yaws = [_event_yaw(ev, mirror) for ev in events]
+    smoothed = _smooth_targets(events, [_event_root_target(ev, mirror, y) + (y,)
+                                        for ev, y in zip(events, yaws)])
+    yaws = [s[3] for s in smoothed]
+    targets = [t + (y,) for t, y in zip(
+        _wrist_fit(events, [s[:3] for s in smoothed], yaws, mirror,
+                   press_depth_white, press_depth_black), yaws)]
 
     # Kept as well as keyed: the finger solve below needs to know where the
     # wrist actually is at each frame it poses a finger, not just where the
@@ -752,8 +845,10 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     wrist_keys = []
 
     def key_root(t, target):
-        arm_obj.location = target
+        arm_obj.location = target[:3]
+        arm_obj.rotation_euler = (0.0, 0.0, target[3])
         arm_obj.keyframe_insert(data_path="location", frame=to_frame(t))
+        arm_obj.keyframe_insert(data_path="rotation_euler", frame=to_frame(t))
         wrist_keys.append((to_frame(t), target))
 
     prev_t = None
@@ -875,11 +970,19 @@ def animate_hand(arm_obj, notes, fps, frame_start,
                      | {fr for fr, _loc in wrist_keys}
                      | {e[0] for plan in plans.values() for e in plan})
     for frame in moments:
-        wrist = _sample(wrist_keys, frame)
+        wx, wy, wz, yaw = _sample(wrist_keys, frame)
+        # The whole hand is solved in ITS OWN frame (_hand_xy): the wrist at the
+        # origin with the fingers along +y, which is the frame the bones are
+        # posed in and the one every offset in build_hands.FINGERS is written
+        # in. Only the keys have to be brought into it. Heights are untouched by
+        # a yaw, so z stays the world height throughout.
+        wrist = (0.0, 0.0, wz)
         knuckles, digits = {}, []
         for f in FINGERS:
             knuckles[f] = _knuckle(f, wrist, mirror)
             target, flex, mix, give = _sample_plan(plans[f], frame)
+            if target is not None:
+                target = _hand_xy(target, (wx, wy, wz), yaw)
             digits.append((max(mix, HOVER_GIVE * give), f, target, flex, mix))
         # Least free first: the finger holding a key down is placed exactly
         # where its key is and becomes an obstacle, then the ones with a little

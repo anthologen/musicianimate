@@ -93,6 +93,21 @@ GAZE_MAX = math.radians(20.0)
 GAZE_DEPTH = 0.45          # m from the head to the keys; sets deg per m of hand
 #                            travel, so the turn scales with the actual reach
 
+# --- Reaching for the far keys ----------------------------------------------
+# The seated arm is 0.58 m from shoulder to wrist and the 88-key board is 1.25 m
+# wide, so the ends of it are simply OUT OF REACH from an upright spine: at C8
+# the right arm came up 40 mm short and the hand rig floated off the end of it.
+# A pianist answers that the way anyone does - by leaning in from the hips - so
+# the torso here leans forward exactly as far as the needier arm requires, and
+# no further. It is solved per keyframe against the hand curves rather than
+# tuned as a constant, because how far out the hands go is a property of the
+# piece, not of the rig.
+REACH_LEAN_MAX = math.radians(22.0)  # spine's own cap is 40; leave room for the
+#                                      sway that is layered on top
+REACH_MARGIN = 0.98        # fraction of the arm's length treated as reachable,
+#                            so it arrives with a hair of bend left, not locked
+REACH_STEP = math.radians(1.0)       # resolution of the lean solve
+
 # Axis conventions on this rig, measured on the built bones (build_pianist poses
 # the figure facing +Y, so they differ from the standing players'):
 #   * spine/head local Y is the bone's own (vertical) axis -> Y = twist/yaw, and
@@ -162,29 +177,76 @@ def _wire_arms():
 # ---------------------------------------------------------------------------
 # Body performance
 # ---------------------------------------------------------------------------
-def _hand_x_sampler():
-    """A function frame -> mean world x of the two hands, read straight off their
-    baked location f-curves. Evaluating the curves (rather than stepping the
-    scene frame by frame) keeps this free of scene state while the body is being
-    keyed."""
+def _wrist_sampler():
+    """A function frame -> {"L": world wrist, "R": world wrist} for the two hand
+    rigs, read straight off their baked location f-curves. Evaluating the curves
+    (rather than stepping the scene frame by frame) keeps this free of scene
+    state while the body is being keyed.
+
+    animate_hands keys each hand armature's LOCATION and its YAW about Z (the
+    hand turns out toward the arm reaching it), so the joint the arm has to
+    reach is that location plus the wrist bone's rest head, turned by the
+    yaw."""
     from piano.piano_midi_animator import _iter_action_fcurves
-    curves = []
+    rigs = {}
     for side in ("L", "R"):
         hand = bpy.data.objects.get(f"Hand_{side}")
-        act = hand and hand.animation_data and hand.animation_data.action
-        fc = next((f for f in _iter_action_fcurves(act)
-                   if f.data_path == "location" and f.array_index == 0), None)
-        if fc is not None:
-            curves.append(fc)
-        elif hand is not None:
-            curves.append(hand.location.x)     # unanimated: a constant
+        if hand is None:
+            continue
+        act = hand.animation_data and hand.animation_data.action
+        curves = {}
+        for fc in (_iter_action_fcurves(act) if act else []):
+            if fc.data_path in ("location", "rotation_euler"):
+                curves[(fc.data_path, fc.array_index)] = fc
+        rigs[side] = (hand, curves, V(hand.data.bones["wrist"].head_local))
 
     def sample(frame):
-        if not curves:
-            return None
-        xs = [c.evaluate(frame) if hasattr(c, "evaluate") else c for c in curves]
-        return sum(xs) / len(xs)
+        out = {}
+        for side, (hand, curves, head) in rigs.items():
+            def value(path, i, default):
+                fc = curves.get((path, i))
+                return fc.evaluate(frame) if fc is not None else default
+            loc = V(tuple(value("location", i, hand.location[i])
+                          for i in range(3)))
+            yaw = value("rotation_euler", 2, hand.rotation_euler[2])
+            out[side] = loc + (mathutils.Matrix.Rotation(yaw, 3, 'Z') @ head)
+        return out
     return sample
+
+
+def _arm_metrics(arm):
+    """(rest shoulder positions, arm length, hip-to-shoulder lever) in world
+    space, measured off the built rig rather than assumed."""
+    bones = arm.data.bones
+    shoulders, arm_len = {}, 0.0
+    for side in ("L", "R"):
+        ua, fore = bones[f"upper_arm.{side}"], bones[f"forearm.{side}"]
+        shoulders[side] = arm.matrix_world @ V(ua.head_local)
+        arm_len = max(arm_len, ua.length + fore.length)
+    pivot = arm.matrix_world @ V(bones["spine"].head_local)
+    lever = shoulders["L"].z - pivot.z
+    return shoulders, arm_len, lever
+
+
+def _reach_lean(wrists, shoulders, arm_len, lever):
+    """The smallest forward lean (radians, >= 0) that puts BOTH wrists inside
+    the arms' reach, capped at REACH_LEAN_MAX.
+
+    Leaning by theta about the hips swings each shoulder forward by
+    lever*sin(theta) and drops it by lever*(1 - cos(theta)); the drop matters
+    here, because the keys are already well below the shoulder, so the lean is
+    stepped rather than solved in closed form."""
+    if not wrists or lever <= 0.0:
+        return 0.0
+    theta = 0.0
+    while theta <= REACH_LEAN_MAX + 1e-9:
+        s, c = math.sin(theta), math.cos(theta)
+        if all((w - (shoulders[side] + V((0.0, lever * s, -lever * (1.0 - c)))))
+               .length <= arm_len * REACH_MARGIN
+               for side, w in wrists.items() if side in shoulders):
+            return theta
+        theta += REACH_STEP
+    return REACH_LEAN_MAX
 
 
 def _animate_body(arm, duration, fps, frame_start):
@@ -198,21 +260,25 @@ def _animate_body(arm, duration, fps, frame_start):
     spine, head = arm.pose.bones.get("spine"), arm.pose.bones.get("head")
     sp_path = 'pose.bones["spine"].rotation_euler'
     hd_path = 'pose.bones["head"].rotation_euler'
-    hand_x = _hand_x_sampler()
+    wrists = _wrist_sampler()
+    shoulders, arm_len, lever = _arm_metrics(arm)
     centre_x = _load("build_pianist").PLAYER_X
 
     t, last = 0.0, frame_start
     while t <= duration + 1e-6:
         ph = 2.0 * math.pi * t / BODY_SWAY_PERIOD
         frame = frame_start + t * fps
+        at = wrists(frame)
         if spine is not None:
             # X leans forward (negative = into the keyboard), Y twists about the
-            # vertical bone axis.
+            # vertical bone axis. The sway rides on top of however far the torso
+            # has had to lean in to put the hands within reach.
             lean = -BODY_LEAN * (0.5 - 0.5 * math.cos(2.0 * ph))
+            lean -= _reach_lean(at, shoulders, arm_len, lever)
             spine.rotation_euler = (lean, BODY_TWIST * math.sin(ph), 0.0)
             arm.keyframe_insert(data_path=sp_path, frame=frame)
         if head is not None:
-            x = hand_x(frame)
+            x = (sum(w.x for w in at.values()) / len(at)) if at else None
             # Positive Y yaws toward the player's LEFT (-x), so the gaze term is
             # negated to turn the head the way the hands went.
             gaze = 0.0
@@ -238,15 +304,21 @@ def _animate_body(arm, duration, fps, frame_start):
 # ---------------------------------------------------------------------------
 # Range-of-motion check
 # ---------------------------------------------------------------------------
-def _check_wrist_pose(arm, frames):
+def _check_wrist_pose(arm, frames, strict=True):
     """Validate each playing wrist against human range of motion, sampled over
     `frames` (so the far ends of the keyboard are covered too). Raises
     RuntimeError -- loud at build time -- if a wrist sits more than
-    WRIST_BEND_MAX off the incoming forearm. Returns the worst bend per side, in
-    degrees, so a merely-tight posture is still visible in the return value."""
+    WRIST_BEND_MAX off the incoming forearm, unless `strict` is False, in which
+    case the offence is only reported.
+
+    Returns per side the worst bend (degrees) and the worst gap (mm) between the
+    arm's own wrist and the hand rig it is supposed to be holding -- a non-zero
+    gap means the arm ran out of length and the hand is floating off the end of
+    it, which is a different failure from a bent wrist and is not caught by any
+    joint limit either."""
     scene = bpy.context.scene
     saved = scene.frame_current
-    worst = {}
+    bend_worst, gap_worst = {}, {}
     for f in frames:
         scene.frame_set(int(round(f)))
         bpy.context.view_layer.update()
@@ -255,23 +327,32 @@ def _check_wrist_pose(arm, frames):
             hand = bpy.data.objects.get(f"Hand_{side}")
             if fore is None or hand is None:
                 continue
-            e = (arm.matrix_world @ fore.tail
-                 - arm.matrix_world @ fore.head).normalized()
+            tail = arm.matrix_world @ fore.tail
+            e = (tail - arm.matrix_world @ fore.head).normalized()
             # The hand's finger axis is its object +Y (fingers point up the keys).
             finger = (hand.matrix_world.to_3x3() @ V((0.0, 1.0, 0.0))).normalized()
             bend = e.angle(finger)
-            if side not in worst or bend > worst[side]:
-                worst[side] = bend
+            if side not in bend_worst or bend > bend_worst[side]:
+                bend_worst[side] = bend
+            gap = (tail - hand.matrix_world @ hand.pose.bones["wrist"].head).length
+            if side not in gap_worst or gap > gap_worst[side]:
+                gap_worst[side] = gap
     scene.frame_set(saved)
-    for side, bend in worst.items():
-        if bend > WRIST_BEND_MAX:
-            raise RuntimeError(
-                f"Hand_{side} wrist is bent {math.degrees(bend):.0f} deg off the "
-                f"forearm (max {math.degrees(WRIST_BEND_MAX):.0f}); the arm is "
-                f"meeting the axis-locked hand at the wrong angle -- adjust the "
-                f"seat in build_pianist (SEAT_Z sets the shoulder height, HIP_Y "
-                f"the distance to the keys, ELBOW_BEND where the elbow hangs).")
-    return {side: math.degrees(b) for side, b in worst.items()}
+    over = {side: b for side, b in bend_worst.items() if b > WRIST_BEND_MAX}
+    if over and strict:
+        side, bend = max(over.items(), key=lambda kv: kv[1])
+        raise RuntimeError(
+            f"Hand_{side} wrist is bent {math.degrees(bend):.0f} deg off the "
+            f"forearm (max {math.degrees(WRIST_BEND_MAX):.0f}); the arm is "
+            f"meeting the axis-locked hand at the wrong angle -- adjust the "
+            f"seat in build_pianist (SEAT_Z sets the shoulder height, HIP_Y "
+            f"the distance to the keys, ELBOW_BEND where the elbow hangs). Pass "
+            f"strict=False to render the take anyway and read the numbers back.")
+    for side, bend in over.items():
+        print(f"WARNING: Hand_{side} wrist bends {math.degrees(bend):.0f} deg off "
+              f"the forearm (max {math.degrees(WRIST_BEND_MAX):.0f})")
+    return ({side: round(math.degrees(b), 1) for side, b in bend_worst.items()},
+            {side: round(g * 1000.0, 1) for side, g in gap_worst.items()})
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +378,14 @@ def _setup_camera(scene):
 # Entry point
 # ---------------------------------------------------------------------------
 def animate_pianist(fingering_json=None, midi_path=None, fps=24, frame_start=1,
-                    build=True, camera=True):
+                    build=True, camera=True, strict=True):
     """Build (optionally), press the keys, animate the hands, make the seated
-    pianist's arms follow them, and add a body groove."""
+    pianist's arms follow them, and add a body groove.
+
+    `strict` (default True) makes a wrist outside human range of motion a hard
+    error. Set it False for a deliberate stress piece -- one that plays the top
+    and bottom of the board at once, say -- where the take is still wanted, and
+    read `wrist_bend_deg` in the result to see what it cost."""
     if fingering_json is None:
         fingering_json = os.path.join(_HERE, "fingering.json")
     if midi_path is None:
@@ -329,9 +415,9 @@ def animate_pianist(fingering_json=None, midi_path=None, fps=24, frame_start=1,
 
     # 4. Both wrists must be humanly posed on the finished rig -- the hands are
     #    axis-locked, so only the arm can get this wrong, and only here.
-    bend = _check_wrist_pose(
+    bend, gap = _check_wrist_pose(
         arm, range(frame_start, hand_result["frame_end"] + 1,
-                   max(1, int(round(fps / 6)))))
+                   max(1, int(round(fps / 6)))), strict=strict)
 
     if camera:
         _setup_camera(scene)
@@ -342,7 +428,7 @@ def animate_pianist(fingering_json=None, midi_path=None, fps=24, frame_start=1,
 
     return {"pianist": arm.name, "frame_end": scene.frame_end, "fps": fps,
             "keys_animated": keys_result and keys_result["notes_animated"],
-            "wrist_bend_deg": {k: round(v, 1) for k, v in bend.items()},
+            "wrist_bend_deg": bend, "arm_reach_gap_mm": gap,
             **hand_result}
 
 
