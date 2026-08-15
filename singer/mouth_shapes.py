@@ -120,6 +120,24 @@ VISEME_ORDER = ("SIL", "MBP", "FV", "TH", "DD", "SS", "CH", "KK", "RR", "WW",
 LEVELS = ("soft", "medium", "loud")
 LEVEL_GAIN = {"soft": 0.62, "medium": 1.00, "loud": 1.38}
 
+# Aperture ceiling.  A sung "ah" drops the jaw, but an opening that approaches
+# the mouth's own width reads as a cartoon gape rather than a singer.  The
+# aperture is therefore soft-clipped rather than simply scaled down: below
+# OPEN_KNEE nothing changes (the small consonant apertures keep their exact
+# sizes and relationships), and above it the remaining travel is compressed
+# asymptotically toward OPEN_MAX - so a loud "ah" still reads as more open
+# than a soft one, but no shape ever gapes past the ceiling.
+OPEN_KNEE = 0.28
+OPEN_MAX = 0.46
+
+
+def _limit_open(value):
+    """Soft-clip an aperture to OPEN_MAX (see above)."""
+    if value <= OPEN_KNEE:
+        return value
+    span = OPEN_MAX - OPEN_KNEE
+    return OPEN_KNEE + span * (1.0 - math.exp(-(value - OPEN_KNEE) / span))
+
 # Velocity thresholds for picking a variant from a MIDI note.
 LEVEL_VELOCITY = ((55, "soft"), (95, "medium"), (128, "loud"))
 
@@ -204,6 +222,8 @@ def shape_for(viseme, level="medium"):
     shape["round"] = min(1.0, base["round"] * (1.0 + 0.10 * (gain - 1.0)))
     shape["teeth"] = min(1.0, base["teeth"] * (0.85 + 0.15 * gain))
     shape.update(base.get(level, {}))
+    # Last word on the aperture, so an explicit per-level override is capped too.
+    shape["open"] = _limit_open(shape["open"])
     return shape
 
 
