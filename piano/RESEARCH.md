@@ -147,6 +147,94 @@ cases (`python -m piano.fingering --selftest`): C-major scale must produce
 two-octave runs must cross thumb-under, and a bass line + melody must split
 cleanly. Debug visualization: `./inspect_midi.py <file> --fingering`.
 
+## Hand-pose realism: dimensions and joint limits
+
+The fingering solver decides *which* finger presses *which* key;
+`build_hands.py` then has to be a hand shaped like a hand, and
+`animate_hands.py` has to pose it without the joints doing things a hand
+cannot do. Both come from the guitar/bass fretting hands (see
+`guitar/RESEARCH.md`, `bass_guitar/RESEARCH.md`) so that all three players
+read as the same size of human.
+
+### Dimensions
+
+Phalanx lengths, knuckle spread and per-phalanx cross-sections are adult-hand
+anthropometry, shared verbatim with the fret hands (`FINGERS`,
+`FINGER_CROSS`): proximal phalanges ~44–48 mm on the index/middle down to
+~37 mm on the little finger, each phalanx roughly 0.6 of the one before it;
+digit breadths ~18 mm at the index/middle proximal tapering to ~11–14 mm at
+the fingertip, with the little finger slimmest and the thumb thickest. The
+knuckle line keeps its natural arc and spans a realistic 74 mm index-to-little
+(~25 mm pitch, up from the 19 mm the rig started with), on an 86 × 72 × 24 mm
+palm.
+
+Finger 1 is a driven **thumb column**, not a fifth finger: metacarpal
+(~46 mm) + proximal (~31 mm) + distal (~22 mm) rooted at the CMC joint near
+the wrist on the radial edge and a little below the palm plane. Extended, its
+tip reaches about to the index finger's PIP joint, as a real thumb does.
+
+### Joint range of motion
+
+Every phalanx is caged with a local `LIMIT_ROTATION` constraint at build time
+(`FINGER_ROT_LIMIT`, `THUMB_ROT_LIMIT`), the same way `build_guitarist` /
+`build_bassist` cage the elbow and knee. Per-finger means for index → little
+(Thieme 2024; AAOS goniometry):
+
+| Joint | Flexion | Extension (backward) | Abduction/adduction |
+|---|---|---|---|
+| **MCP** (knuckle) | ~85–90° | ~25–30° (little finger the most) | **~±25°** |
+| **PIP** | ~95–110° | ~0° | none |
+| **DIP** | ~80–85° | ~0–10° | none |
+
+and for the thumb: CMC ~15–20° flexion/extension but **45–60° of palmar/radial
+abduction**, MCP ~55° flexion, IP ~80° flexion with 15–20° hyperextension.
+
+Two joints are deliberately looser than their own norm, for the same reason as
+on the guitar: the closed-form IK lumps the distal phalanx into the middle
+link, so `f<n>_mid` carries the **combined** PIP+DIP (~190°) — or, on the
+thumb, MCP+IP (~135°) — fold, while `f<n>_dist` holds a fixed natural flexion.
+The constraints are pure guards: the shipped performance keyframes *inside*
+the cage on every bone and every frame, with ~3° to spare at the tightest
+(verified in-scene against the baked action).
+
+### Reaching is the wrist's job
+
+The animator caps the IK's knuckle yaw at the anatomical `FINGER_MCP_SPLAY`
+(26°; the thumb's CMC gets `THUMB_CMC_SPLAY`, 45°). Uncapped it splayed
+pressing fingers up to 48° on the demo — a finger swinging sideways under its
+neighbours rather than a hand moving. So the *wrist* does the reaching, in
+three places:
+
+- **`_splay_clamp_x`** slides the wrist along the keyboard until every
+  pressing finger's key is within its splay window (`tan(cap) ×` the
+  knuckle-to-key distance). The Gaussian-smoothed glide — what produces the
+  crossunder/crossover look — survives wherever the fingers can absorb it.
+- **`BLACK_KEY_LIFT`** rides the hand ~18 mm higher over any event touching a
+  black key. Black keys sit 12 mm up and 55 mm further in, leaving so little
+  drop from knuckle to fingertip that the fingers folded *backward* (~39° of
+  MCP hyperextension on the demo's black-key scale). Pianists meet the black
+  keys with a higher, flatter hand.
+- **`_wrist_fit`** searches a grid around the smoothed target — ±16 mm in and
+  out from the keys, and down from the hover height to a 45 mm floor — for the
+  placement its fingers can actually hold, scoring the two failure modes
+  against each other: fingertip off its key (too far away, or pinned at the
+  splay cap) versus knuckle bowed backward past `FINGER_MCP_HYPEREXT` (too
+  close). A regularizer keeps the hand on its glide, so this only bites on
+  stretched voicings: on the demo it moves 10 of 40 events, and all but the two
+  stretched chords by a few millimetres.
+
+What is left over is honest: at full stretch (a 1-2-3-5 octave chord, 168 mm
+between the outer keys) the hand runs out of span and the residual is shared
+between the thumb and the outer fingers, ~4.5 mm of sideways error on a 23 mm
+key rather than a dislocated knuckle. Every other press in the demo lands on
+its key exactly.
+
+Sources: [Normal Active ROM of the Index–Little Fingers (Thieme, 2024)](https://www.thieme-connect.com/products/ejournals/pdf/10.1055/s-0044-1788593.pdf);
+[AAOS normal-ROM goniometry chart](https://goniometer.io/range-of-motion);
+[Physiopedia: MCP joint abduction goniometry](https://www.physio-pedia.com/Goniometry:_Finger_Metacarpophalangeal_Joint_Abduction);
+[StatPearls: Metacarpophalangeal joints](https://www.ncbi.nlm.nih.gov/books/NBK538428/);
+Garrett (1971) hand anthropometry / ANSUR digit breadths.
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic
