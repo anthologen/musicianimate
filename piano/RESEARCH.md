@@ -649,6 +649,135 @@ take, whose scale runs are all genuine crossings, is **bit-identical** — its
 thumb still tucks under at frames 45, 292–295 and 316–319, which is what those
 frames are.
 
+## The wrist drops into the key
+
+Everything above moves the hand *around* the keyboard. None of it tilts the
+hand, and until now nothing did: the wrist carried a position and a turn-out and
+nothing else, so every note in every take was played by the fingers alone out of
+a plate of a hand held exactly parallel to the keybed. Watch anyone play and
+that is the one thing that reads as wrong. A pianist's wrist **flexes into the
+key and extends back off it** — the "down–up" every teacher draws over a
+two-note slur, and, written large, the wrist stroke that chords and octaves are
+played with, where the forearm holds still and the hand swings at the wrist like
+a hinge. It is not decoration: louder tones are produced by recruiting *more of
+the arm*, sequenced proximal-to-distal, and the wrist is the last joint in that
+chain — the one that visibly gives when the chord lands.
+
+So the armature object's rotation now carries a pitch as well as a yaw
+(negative = flexion), and every finger is solved in the frame that tilt puts the
+hand in (`_hand_frame`), so the fingertips hold their keys through the whole
+gesture.
+
+### Where the stroke hinges is the whole problem
+
+A fingertip on a key cannot go anywhere. Tilting the hand therefore has to move
+everything *else*, and where it hinges decides what:
+
+- **at the wrist** — the wrist stands still, the palm swings down, and the
+  fingers fold up to stay on their keys;
+- **at the fingertips** — the fingers keep their pose exactly and the whole hand
+  rides up and forward over them.
+
+The first is the naive reading of "the hand pitches about the wrist", and it is
+the expensive one: the tilt carries a key about `sin(flex) ×` the wrist's height
+above it — ~8 mm at 10° — *further out along the fingers*, and reach is the one
+thing a stretched hand has least of. Fitted that way, `_wrist_fit` answered the
+shortfall the only way it can, by diving at the keyboard (the reach take's wrist
+floor fell from 57 mm to 46 mm), which dragged the resting fingers down among
+the keys and put that take's right hand 2.3 mm *through* itself.
+
+So the hinge sits under the knuckles at key level (`PITCH_PIVOT_Y/Z`,
+implemented as a rotation plus the compensating wrist offset `_stroke_offset`).
+A pressing finger's reach is then untouched by the tilt; what the stroke spends
+is the *drop* beneath the knuckles — the palm settling toward the keys as the
+hand flexes, which is what it looks like anyway — plus about a centimetre of
+rise and reach at the wrist itself, which the arm follows.
+
+### How deep, and when not at all
+
+Depth is a question of **effort**, not of note. Loudness leads and chord width
+adds to it — a chord is more of the hand, but a pianissimo chord is still
+pianissimo — over a range from a 2.5° settle to an 11° drop
+(`PITCH_FLEX_MIN/MAX`; playing lives well inside the wrist's ~70° of flexion —
+what limits this is that the hand has to stay over the keys, not the joint). On
+the demo take that grades a *pp* single note at 2.5°, *mf* at 4.2°, *f* at 7.6°,
+a *ff* single note at 11.0°, a three-note *pp* chord at 5.0° and the four-note
+*ff* chord at 11.0°.
+
+The shape of one gesture is prep, bottom, rebound, settle: the hand cocks up a
+little first (a drop has to fall from somewhere), bottoms out 50 ms *after* the
+key lands — the wrist absorbing the arrival rather than leading it — rebounds
+past level by half the drop, and settles. Only the bottom is guaranteed;
+everything around it is dropped where the music has not left room, so a fast
+passage loses the follow-through first and the prep next.
+
+Three things then take the stroke away, and each is the same statement: *a
+gesture is what the hand has left over.*
+
+- **Speed** (`PITCH_FULL_GAP`). A gesture belongs to a note the hand has time to
+  make one on. Asked for every note of a run, the wrist either flutters or —
+  since the space between the notes is what gets dropped first — simply sits
+  flexed for the whole run, which is the one shape a level hand at least never
+  had. The amplitude scales with the room around the event, so the demo's
+  four-notes-per-second scale plays at 4.1° instead of 8.1°: from the fingers,
+  out of a quiet hand.
+- **Thumb crossings** (`PITCH_CROSS_FRAC`). A thumb under the palm is the
+  tightest the hand ever is, and a wrist bouncing on top of that is exactly what
+  put those 1.5 mm of the demo's ascending run through itself. It is also not
+  how a scale is played. Crossings keep 30% of their stroke — 1.2° on that run.
+- **Reach** (`PITCH_FIT_STEPS`). Even hinged where it costs the least, the tilt
+  costs the fingers *something*, and a hand at full stretch has nothing to give:
+  the reach take's left-hand 4–1 stretch from B3 to G4 lost 3 mm of its thumb to
+  a stroke it could not afford, which is a fingertip sitting visibly off its key
+  so that the wrist could wave. So `_wrist_fit` is asked at a ladder of depths
+  and keeps the deepest one that costs the fingers nothing (half a millimetre of
+  slack). A pianist reaching that far has a straight wrist too.
+
+One more thing had to change under it. The clearance search charges a digit for
+dodging its neighbour *downward* into the keys (`KEYBED_COST`), but a charge is
+not a wall, and against a clearance it could buy no other way it will be paid:
+on the reach take's octave stretch the releasing index finger bought its way out
+of the pinky by sinking 12 mm into the key it had just played, then snapping out
+of it in one frame. The dip is now capped as well (`KEYBED_DIVE_MAX`, 2 mm ≈ what
+the key gives under a finger); past it the pose is not offered at all, and a
+digit with nothing else left crosses by a hair instead, where the refinement
+pass can see it.
+
+### Measured
+
+Across both takes, against the same takes with the stroke amplitude set to zero
+(which reproduces the previous animation exactly — the frame transforms, the
+re-keying and the dive cap are all no-ops on a level hand):
+
+| | wrist pitch | finger clearance | worst fingertip-to-key | lowest point of any digit | wrist bend off forearm |
+|---|---|---|---|---|---|
+| demo L | −9.9° … +4.7° | 1.00 mm (was 1.08) | 0.2 mm (0.0) | 11.6 mm (12.5) | 11.7° (9.8) |
+| demo R | −10.9° … +5.2° | 0.03 mm (0.10) | 6.9 mm (7.9) | 11.5 mm (11.6) | 23.5° (20.7) |
+| reach L | −10.9° … +5.2° | 0.91 mm (0.16) | 0.6 mm (0.6) | 11.3 mm (12.5) | 28.6° (27.8) |
+| reach R | −10.9° … +5.2° | 0.40 mm (0.02) | 0.9 mm (0.6) | 11.3 mm (12.5) | 50.7° (47.9) |
+
+No two digits intersect on any rendered frame of either take, nothing reaches
+more than ~1 mm below a pressed key top (a white key dips to 12.5 mm), the
+stretched chords keep the same honest residual they always had, and both wrists
+stay inside `WRIST_BEND_MAX` — the stroke costs about 3° of that headroom on the
+reach take, which is the deliberate stress piece.
+
+Sources: [Furuya & Kinoshita, on how loudness recruits the proximal joints and
+the proximal-to-distal sequence of the downswing (summarised in "Flexibility of
+movement organization in piano performance", Front. Hum. Neurosci.
+2013)](https://www.frontiersin.org/journals/human-neuroscience/articles/10.3389/fnhum.2013.00173/full);
+[Kinoshita, Furuya, Aoki & Altenmüller, "Loudness control in pianists as
+exemplified in keystroke force measurements", JASA
+2007](https://www.immm.hmtm-hannover.de/fileadmin/www.immm/Publikationen/Kinoshita_et_al_JASA_121_May_2007.pdf);
+[Furuya, Aoki, Nakahara & Kinoshita, "Individual differences in the
+biomechanical effect of loudness and tempo on upper-limb movements during
+repetitive piano keystrokes", Hum. Mov. Sci.
+2011](https://pubmed.ncbi.nlm.nih.gov/21816497/); on the pedagogy of the stroke
+itself, [Spanswick, "5 top tips to improve wrist
+staccato"](https://melaniespanswick.com/2015/04/09/5-top-tips-to-improve-wrist-staccato/)
+and [Faber Piano Adventures, "Articulation and the
+wrist"](https://pianoadventures.com/blog/2016/02/01/level-1-articulation-and-the-wrist/).
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic

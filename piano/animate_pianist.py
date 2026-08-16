@@ -8,8 +8,9 @@ The piano pipeline already produces, independently:
   * piano_midi_animator.py -> dips the 88 keys from the same MIDI
   * build_hands.py    -> "Hand_L" / "Hand_R" armatures that play those keys
   * animate_hands.py  -> keyframes those two hand rigs from the fingering.json
-                         (the armature object's location carries the wrist along
-                         the keyboard; the finger bones are baked FK)
+                         (the armature object's transform carries the wrist
+                         along the keyboard, turned out toward its arm and
+                         pitched into every note; the finger bones are baked FK)
   * build_pianist.py  -> a seated humanoid "Pianist" rig on a stool, with IK arms
                          + legs and a hand.* stub at each wrist
 
@@ -115,14 +116,16 @@ REACH_STEP = math.radians(1.0)       # resolution of the lean solve
 #   * local X leans forward/back, NEGATIVE being forward into the keyboard.
 
 # --- Wrist range-of-motion guard --------------------------------------------
-# The playing hands are SEPARATE armatures, and on the piano they are axis-locked
-# (animate_hands keys their location only -- fingers always along +y, palm always
-# down), so nothing about the HAND can drift out of range. What can, and what
-# this guard is really watching, is the ARM: the wrist bend is set entirely by
-# where the shoulder sits, i.e. by the bench height and the seat distance in
+# The playing hands are SEPARATE armatures, and what they do at the wrist is
+# authored, not solved: animate_hands turns each hand out toward its arm and
+# pitches it into every note (the wrist stroke), both inside a few degrees of
+# what a wrist does. What is NOT authored anywhere, and what this guard is
+# really watching, is the ARM: the rest of the bend is set entirely by where the
+# shoulder sits, i.e. by the bench height and the seat distance in
 # build_pianist. Get those wrong and the forearm dives onto the keys with the
 # wrist broken 50 deg, which no IK limit catches because the hand is not a joint
-# the rig solves.
+# the rig solves. Measured off matrix_world, so the hand's own share is counted
+# in: on the reach take the stroke costs about 3 deg of the headroom below.
 WRIST_BEND_MAX = math.radians(60.0)   # combined flexion/extension + deviation the
 #                                       hand's long axis may sit off the forearm.
 #                                       Tighter than the guitar's 90: a piano hand
@@ -183,10 +186,12 @@ def _wrist_sampler():
     (rather than stepping the scene frame by frame) keeps this free of scene
     state while the body is being keyed.
 
-    animate_hands keys each hand armature's LOCATION and its YAW about Z (the
-    hand turns out toward the arm reaching it), so the joint the arm has to
-    reach is that location plus the wrist bone's rest head, turned by the
-    yaw."""
+    animate_hands keys each hand armature's LOCATION, its YAW about Z (the hand
+    turns out toward the arm reaching it) and its PITCH about X (the wrist
+    stroke flexing into each note), so the joint the arm has to reach is that
+    location plus the wrist bone's rest head, turned by both. The pitch moves
+    the head by a couple of millimetres at most - it sits 25 mm behind the
+    pivot - but the arm may as well follow the hand it is actually holding."""
     from piano.piano_midi_animator import _iter_action_fcurves
     rigs = {}
     for side in ("L", "R"):
@@ -208,8 +213,10 @@ def _wrist_sampler():
                 return fc.evaluate(frame) if fc is not None else default
             loc = V(tuple(value("location", i, hand.location[i])
                           for i in range(3)))
-            yaw = value("rotation_euler", 2, hand.rotation_euler[2])
-            out[side] = loc + (mathutils.Matrix.Rotation(yaw, 3, 'Z') @ head)
+            rot = mathutils.Euler(
+                (value("rotation_euler", 0, hand.rotation_euler[0]), 0.0,
+                 value("rotation_euler", 2, hand.rotation_euler[2])), 'XYZ')
+            out[side] = loc + (rot.to_matrix() @ head)
         return out
     return sample
 
@@ -344,7 +351,7 @@ def _check_wrist_pose(arm, frames, strict=True):
         raise RuntimeError(
             f"Hand_{side} wrist is bent {math.degrees(bend):.0f} deg off the "
             f"forearm (max {math.degrees(WRIST_BEND_MAX):.0f}); the arm is "
-            f"meeting the axis-locked hand at the wrong angle -- adjust the "
+            f"meeting the hand at the wrong angle -- adjust the "
             f"seat in build_pianist (SEAT_Z sets the shoulder height, HIP_Y "
             f"the distance to the keys, ELBOW_BEND where the elbow hangs). Pass "
             f"strict=False to render the take anyway and read the numbers back.")
@@ -413,8 +420,8 @@ def animate_pianist(fingering_json=None, midi_path=None, fps=24, frame_start=1,
     duration = max((n["end"] for n in notes), default=0.0)
     _animate_body(arm, duration, fps, frame_start)
 
-    # 4. Both wrists must be humanly posed on the finished rig -- the hands are
-    #    axis-locked, so only the arm can get this wrong, and only here.
+    # 4. Both wrists must be humanly posed on the finished rig -- the hand's own
+    #    share of the angle is authored and small, so this is really the arm.
     bend, gap = _check_wrist_pose(
         arm, range(frame_start, hand_result["frame_end"] + 1,
                    max(1, int(round(fps / 6)))), strict=strict)

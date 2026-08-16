@@ -18,8 +18,13 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
     the music does not otherwise allow it.
     It also carries a YAW (_event_yaw), turning the hand out toward the arm
     that reaches it, so a hand playing far from its own shoulder does not
-    leave the whole diagonal in the wrist. Everything below the wrist is
-    then solved in the hand's own frame (_hand_xy).
+    leave the whole diagonal in the wrist, and a PITCH (_pitch_keys): the
+    wrist stroke, flexing the hand down into each note and letting it
+    rebound off, as deep as the note is loud and the chord is wide and only
+    where the passage leaves room for the gesture. Everything below the
+    wrist is then solved in the hand's own frame (_hand_frame), so the
+    fingertips hold their keys through the whole stroke and what gives is
+    the fingers.
     How much of the reaching the wrist takes is set by what the fingers
     have room for BESIDE EACH OTHER (SPLAY_BESIDE), not by what their
     knuckles could do in isolation - a finger adducted to its joint's own
@@ -319,6 +324,107 @@ YAW_SPREAD = 0.008      # m of depth spread across a grip a yaw may impose
 # deviations for small offsets), too large and they flatten out.
 REACH_FRAC = 0.55
 
+# --- wrist pitch: the drop into the key --------------------------------------
+# The hand also PITCHES. Held level - where it sits and how far it is turned out
+# were the only two things the wrist carried - every note is played by the
+# fingers alone out of a plate of a hand that stays exactly parallel to the
+# keybed, and a piano is not played that way: the wrist FLEXES into the key and
+# EXTENDS back off it. That is the whole of the wrist stroke (the wrist staccato
+# octaves and chords are played with, where the forearm holds still and the hand
+# swings down at the wrist to strike and lifts to release), and it is there in
+# miniature in ordinary playing - the "down-up" every teacher draws over a
+# two-note slur.
+#
+# So the armature object's rotation carries a pitch as well as a yaw: NEGATIVE
+# is flexion, the fingers swinging down toward the palm side, positive is
+# extension. Everything below the wrist is then solved in the frame the pitch
+# puts the hand in (_hand_frame), so the fingertips stay on their keys through
+# the whole gesture and it is the HAND that moves around them.
+#
+# Which means the stroke needs a HINGE, and the choice is not free. A fingertip
+# on a key cannot go anywhere, so tilting the hand has to move everything else
+# instead, and where it hinges decides what: hinge at the wrist and the wrist
+# stands still while the palm swings down and the fingers fold up to stay on
+# their keys; hinge out at the fingertips and the fingers keep their pose exactly
+# while the whole hand rides up and forward over them. The first spends the
+# fingers' REACH - the tilt carries a key ~8 mm further out along a hand that is
+# already stretched for it - which is the one thing they have least of, and on a
+# take at full stretch the wrist fit answers by diving at the keyboard to get it
+# back, dragging the resting fingers down among the keys with it.
+#
+# So the hinge sits under the knuckles at KEY LEVEL (PITCH_PIVOT_*): the reach a
+# pressing finger needs is untouched by the tilt, and what the stroke does spend
+# is the DROP beneath the knuckles - the palm settling toward the keys as the
+# hand flexes, which is what it looks like anyway - plus a centimetre of rise
+# and reach at the wrist itself, which the arm follows.
+#
+# How far it goes is a question of EFFORT, not of note. A mezzo-piano single
+# note is a finger; a fortissimo chord is the hand with the arm behind it, and
+# the wrist that lands it visibly gives. Loudness leads, and width ADDS to it
+# rather than standing in for it: a chord is more of a gesture than one note at
+# the same dynamic, because it is more of the hand, but a pianissimo chord is
+# still pianissimo and is not landed like a fortissimo one.
+PITCH_FLEX_MIN = math.radians(2.5)    # the settle even a quiet note has
+PITCH_FLEX_MAX = math.radians(11.0)   # a fortissimo chord. Playing lives well
+#                                       inside the wrist's ~70 deg of flexion;
+#                                       what limits this is that the hand has to
+#                                       stay over the keys, not the joint
+PITCH_VEL_SOFT = 0.35   # MIDI velocity (0..1) under which nothing is loud...
+PITCH_VEL_LOUD = 0.95   # ...and at which it is as loud as this counts
+PITCH_CHORD_FULL = 4    # notes at once that read as the whole hand
+PITCH_CHORD_W = 0.45    # what such a chord is worth next to the dynamic
+
+# The shape of one gesture: the hand cocks UP a little first (a drop has to fall
+# from somewhere), bottoms out just AFTER the key lands - the wrist absorbing
+# the arrival rather than leading it - rebounds past level, and settles. The
+# prep and the rebound are fractions of the drop, so a quiet note has almost
+# neither and a chord has a visible follow-through.
+PITCH_PREP_FRAC = 0.35
+PITCH_REBOUND_FRAC = 0.5
+PITCH_PREP_LEAD = 0.13    # s the cock-up sits ahead of the strike (inside
+#                           ARRIVE_LEAD: the hand is already in position)
+PITCH_SINK = 0.05         # s after the strike that the flexion bottoms out
+PITCH_REBOUND_LAG = 0.13  # s from the bottom to the top of the rebound
+PITCH_SETTLE = 0.20       # s from there back to level
+
+# ...and none of it happens in a fast passage. A gesture belongs to a note the
+# hand has the time to make one on; asked for every note of a run the wrist
+# would either flutter, or - since the space between the keys is what gets
+# dropped first - simply sit flexed for the whole run, which is the one shape a
+# level hand at least never had. So the amplitude is scaled by the room the
+# event has around it, and a run comes out played the way it is in life: the
+# fingers alone, out of a quiet hand.
+PITCH_FULL_GAP = 0.50   # s of clear time either side buys the whole gesture
+#                         (about what the shape above takes end to end)
+PITCH_MIN_GAP = 0.04    # s; a key closer than this to the last one is dropped
+
+# Nor over a THUMB CROSSING. A thumb passing under the palm is the tightest the
+# hand ever is - the thumb is beneath its own index finger with a key at the end
+# of it - and a wrist bouncing on top of that is what puts the two through each
+# other (on the demo's ascending run, 1.5 mm of it). It is also just not how a
+# scale is played: the hand glides and the thumb goes under a quiet wrist.
+PITCH_CROSS_FRAC = 0.3
+
+# The hinge, in the hand's own frame (see above). Forward of the wrist by the
+# knuckle line and down by the height a hovering hand holds over the keys, so
+# the point that stays put through the stroke is roughly the key a pressing
+# finger is standing on. Further out and the wrist would swing more and the
+# fingers less; further in and the fingers would take a fold they have not got.
+PITCH_PIVOT_Y = 0.050
+PITCH_PIVOT_Z = key_layout.WHITE_H - HOVER_Z
+
+# And a stroke is still a LUXURY. Even hinged where it costs the least, tilting
+# the hand costs something - the drop under the knuckles - and a hand already at
+# full stretch has nothing to give: on the reach take the left hand's 4-1 stretch
+# from B3 up to G4 lost 3 mm of its thumb to a stroke it could not afford, which
+# is a fingertip sitting visibly off its key so the wrist could wave. So the fit
+# is asked at a ladder of depths and the deepest one that costs the fingers
+# nothing is kept. A pianist reaching that far has a straight wrist too.
+PITCH_FIT_STEPS = (1.0, 0.6, 0.3)   # fractions of the intended stroke, tried
+#                                     deepest first
+PITCH_FIT_SLACK = 0.0005            # m of extra fingertip error a stroke may
+#                                     cost before it is given up as unaffordable
+
 # --- wrist fit ---------------------------------------------------------------
 # Bounds and weights for the little per-event search that settles where the
 # wrist sits (see _wrist_fit). The steps are ~2 mm, finer than the hand's
@@ -516,6 +622,16 @@ KEYBED_COST = 0.2                 # per m below that: ~7x the cost of the same
                                   # and its neighbour on the demo's thumb-under
                                   # would rather lift 20 mm clear and sweep back
                                   # down through the finger beside it.
+# A charge is not a wall, though, and against a clearance it cannot buy any
+# other way it will be paid: on the reach take's octave stretch, with the wrist
+# stroke tilting the hand over it, the releasing index finger bought its way out
+# of the pinky by sinking 12 mm into the key it had just played - which reads as
+# a fingertip inside the keyboard and then snapping out of it, and no clearance
+# between two fingers is worth that. So the dip is also CAPPED, at about what
+# the key gives under a finger. Past it the pose is not offered at all, and a
+# digit with nothing else left crosses its neighbour by a hair instead, where
+# the refinement pass can see it.
+KEYBED_DIVE_MAX = 0.002           # m below its own wish a nudge may push a digit
 
 # --- lifting the hand between positions --------------------------------------
 # Between two events the wrist used to glide flat, at the same height it plays
@@ -608,17 +724,70 @@ def _digit_offset_x(note, mirror):
     return kx * mirror - out
 
 
-def _hand_xy(point, wrist, yaw):
-    """A world point in the hand's own frame: the wrist at the origin and +y
-    along the fingers, so a knuckle sits at exactly its build_hands offset and
-    every finger solve reads the same as it did before the hand could turn.
+def _hand_frame(point, wrist, yaw, pitch=0.0):
+    """A world point in the hand's own frame: the wrist at the origin, +y along
+    the fingers and +z out the back of the hand, so a knuckle sits at exactly
+    its build_hands offset and every finger solve reads the same as it did
+    before the hand could turn or tilt.
 
-    Only x and y rotate - the yaw is about Z - so the z that comes back is still
-    the world height, which is what the reach/hover geometry is written in.
+    The hand's transform is Rz(yaw) . Rx(pitch) - the XYZ euler the object is
+    keyed with, the pitch about the hand's own sideways axis and the yaw about
+    world Z - so this is its inverse, applied in the other order.
+
+    Heights come back in the convention the rest of the solve is written in:
+    measured from the wrist, but reported as `wrist[2] +` that, so a level hand
+    (pitch 0) returns the world height it always did and nothing downstream can
+    tell the difference.
     """
     dx, dy = point[0] - wrist[0], point[1] - wrist[1]
+    dz = point[2] - wrist[2]
     c, s = math.cos(yaw), math.sin(yaw)
-    return (c * dx + s * dy, c * dy - s * dx, point[2])
+    x, y = c * dx + s * dy, c * dy - s * dx
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    return (x, cp * y + sp * dz, wrist[2] + cp * dz - sp * y)
+
+
+def _stroke_offset(pitch, yaw=0.0):
+    """Where the wrist itself has to go for the hand to be pitched by `pitch`
+    about the stroke's hinge (PITCH_PIVOT_*) instead of about the wrist: a world
+    offset to add to the wrist placement.
+
+    The hinge is a point in the hand, so it moves when the hand turns; this is
+    what puts it back. Flexing, the wrist comes up and forward over it; on the
+    prep and the rebound it settles back and down.
+    """
+    c, s = math.cos(pitch), math.sin(pitch)
+    y0, z0 = PITCH_PIVOT_Y, PITCH_PIVOT_Z
+    dy = y0 - (c * y0 - s * z0)
+    dz = z0 - (s * y0 + c * z0)
+    return (-math.sin(yaw) * dy, math.cos(yaw) * dy, dz)
+
+
+def _stroke_wrist(tgt, yaw, pitch):
+    """A wrist placement as the stroke actually holds it at `pitch` - the same
+    point the fit is scoring, moved onto its hinge."""
+    return tuple(t + o for t, o in zip(tgt, _stroke_offset(pitch, yaw)))
+
+
+def _world_z(point, wrist, pitch):
+    """How high above the keybed a point in the hand's own frame actually sits:
+    the inverse of the height _hand_frame hands back."""
+    return (wrist[2] + point[1] * math.sin(pitch)
+            + (point[2] - wrist[2]) * math.cos(pitch))
+
+
+def _local_z(height, y, wrist, pitch):
+    """The hand-frame height a point at hand-frame `y` needs so that it sits at
+    world `height`.
+
+    What every HOVER is written in: HOVER_LIFT is a distance above a key, and a
+    key does not tilt with the hand. Left in the hand's frame, a fingertip told
+    to wait 15 mm over the keys would ride 15 mm over a plane that pitches with
+    the wrist - and with the hand flexed into a chord, the digits out at the end
+    of it would be waiting inside the keyboard.
+    """
+    return (wrist[2]
+            + (height - wrist[2] - y * math.sin(pitch)) / math.cos(pitch))
 
 
 def _event_yaw(event, mirror):
@@ -639,6 +808,81 @@ def _event_yaw(event, mirror):
         cap = min(cap, math.asin(min(1.0, YAW_SPREAD / span)))
     yaw = -HAND_YAW_FRAC * math.atan2(centre - shoulder, ARM_DEPTH)
     return max(-cap, min(cap, yaw))
+
+
+def _event_flex(event, room):
+    """How far the wrist flexes into this event (radians, >= 0; see
+    PITCH_FLEX_MAX).
+
+    `room` (0..1) is how much of a gesture the passage leaves time for. Note
+    that it is the LOUDEST note of a chord that sets the effort, not the mean:
+    a hand landing one accented voice out of four is still landing it.
+
+    Needs the event to have been through _mark_thumb_crossings, since a hand
+    with its thumb under it barely strokes at all (PITCH_CROSS_FRAC).
+    """
+    if event.get("thumb_cross"):
+        room *= PITCH_CROSS_FRAC
+    vel = max(n["velocity"] for n in event["notes"]) / 127.0
+    loud = ((vel - PITCH_VEL_SOFT) / (PITCH_VEL_LOUD - PITCH_VEL_SOFT))
+    loud = max(0.0, min(1.0, loud))
+    wide = max(0.0, min(1.0, (len(event["notes"]) - 1.0)
+                        / max(1.0, PITCH_CHORD_FULL - 1.0)))
+    effort = min(1.0, loud + PITCH_CHORD_W * wide)
+    return room * (PITCH_FLEX_MIN
+                   + effort * (PITCH_FLEX_MAX - PITCH_FLEX_MIN))
+
+
+def _event_room(events, i):
+    """0..1: how much of a wrist gesture event `i` has the time to make, from
+    the closer of its two neighbours (see PITCH_FULL_GAP). The first and last
+    events of a take have all the room in the world on the outside."""
+    gaps = []
+    if i > 0:
+        gaps.append(events[i]["t"] - events[i - 1]["t"])
+    if i + 1 < len(events):
+        gaps.append(events[i + 1]["t"] - events[i]["t"])
+    return min(1.0, min(gaps) / PITCH_FULL_GAP) if gaps else 1.0
+
+
+def _pitch_keys(events, flexes, to_frame, frame_start, fps):
+    """The wrist's pitch over the whole take, as (frame, (pitch,)) keys - the
+    same shape as the travel arc, and sampled the same way.
+
+    Each event contributes the four corners of one gesture (prep, bottom,
+    rebound, level again). Only the BOTTOM is guaranteed: everything around it
+    is dropped where the music has not left room for it, so a passage too fast
+    for the full shape loses the follow-through first and the prep next, and
+    what is left is a shallow dip on the beat rather than a wrist stuck down.
+    """
+    keys = [(frame_start, (0.0,))]
+    step = PITCH_MIN_GAP * fps
+
+    def add(t, pitch):
+        frame = to_frame(t)
+        if frame <= keys[-1][0] + step:
+            return False
+        keys.append((frame, (pitch,)))
+        return True
+
+    for i, ev in enumerate(events):
+        flex = flexes[i]
+        # The next event's own prep is the deadline for this one's tail:
+        # whichever gesture gets to a moment first owns it.
+        nxt = (events[i + 1]["t"] - PITCH_PREP_LEAD if i + 1 < len(events)
+               else float("inf"))
+        add(ev["t"] - PITCH_PREP_LEAD, PITCH_PREP_FRAC * flex)
+        bottom = ev["t"] + PITCH_SINK
+        if not add(bottom, -flex):
+            # Two strikes on top of each other. The deeper flexion stands rather
+            # than a key that will not fit quietly losing the drop it was for.
+            keys[-1] = (keys[-1][0], (min(keys[-1][1][0], -flex),))
+        rebound = bottom + PITCH_REBOUND_LAG
+        for t, pitch in ((rebound, PITCH_REBOUND_FRAC * flex),
+                         (rebound + PITCH_SETTLE, 0.0)):
+            if t >= nxt or not add(t, pitch):
+                break
+    return keys
 
 
 def _splay_range(finger, mirror):
@@ -788,7 +1032,8 @@ def _finger_ik(dx, dy, dv, lengths, dist_flex, splay_cap=MAX_YAW, roll=0.0):
 
 def _finger_chain(knuckle, lengths, yaw, prox, mid, dist_flex, roll=0.0):
     """[knuckle, PIP, DIP, tip] for one posed finger, in whatever frame the
-    knuckle was given in (the piano solves in the hand's own - see _hand_xy).
+    knuckle was given in (the piano solves in the hand's own - see
+    _hand_frame).
 
     Only the proximal bone carries the sideways rotation and the roll (see
     _pose_finger), so the whole chain lies in ONE plane through the knuckle -
@@ -974,6 +1219,9 @@ def _event_root_target(event, mirror, yaw):
     stretched chord the outer fingers have the least reach to spare, so the
     residual is split between them instead of letting the comfortable
     middle fingers drag the wrist off-center.
+
+    Nothing here knows about the wrist stroke: this is where the hand is HELD,
+    and the stroke swings around it (_stroke_offset).
     """
     has_black = any(n["is_black"] for n in event["notes"])
     c, s = math.cos(yaw), math.sin(yaw)
@@ -989,7 +1237,7 @@ def _event_root_target(event, mirror, yaw):
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, z)
 
 
-def _splay_clamp(event, tgt, mirror, yaw, press_white, press_black):
+def _splay_clamp(event, tgt, mirror, yaw, press_white, press_black, pitch=0.0):
     """Slide one wrist target sideways until every pressing finger can reach
     its key within the knuckle's anatomical splay (see FINGER_MCP_SPLAY).
 
@@ -1038,7 +1286,8 @@ def _splay_clamp(event, tgt, mirror, yaw, press_white, press_black):
         settled, feasible = tgt, True
         for _ in range(SPLAY_CLAMP_PASSES):
             slid, feasible = _splay_pass(event, settled, mirror, yaw,
-                                         press_white, press_black, window)
+                                         press_white, press_black, window,
+                                         pitch)
             done = math.dist(slid[:2], settled[:2]) < SPLAY_CLAMP_EPS
             settled = slid
             if done:
@@ -1049,19 +1298,27 @@ def _splay_clamp(event, tgt, mirror, yaw, press_white, press_black):
 
 
 def _splay_pass(event, tgt, mirror, yaw, press_white, press_black,
-                window=_splay_range):
+                window=_splay_range, pitch=0.0):
     """One pass of _splay_clamp: the window as it looks from `tgt`, the smallest
     slide that lands inside it, and whether it was a window at all - two fingers
     can want the hand in two places, and then the best there is is to split the
-    difference between them."""
+    difference between them.
+
+    Looked at from the hand as the wrist stroke holds it at the strike, not from
+    a level one: the tilt leaves a key about where it was along the fingers (the
+    hinge is what buys that) but a good deal less far below them, and a digit
+    with less drop under it bears differently on its key."""
     has_black = any(n["is_black"] for n in event["notes"])
+    at = _stroke_wrist(tgt, yaw, pitch)
     lo, hi = float("-inf"), float("inf")
     for n in event["notes"]:
         kx, ky, kz = FINGERS[n["finger"]]["knuckle"]
-        tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
+        key = (n["x"], _target_y(n, has_black),
+               _press_z(n["is_black"], press_white, press_black))
+        tx, ty, tz = _hand_frame(key, at, yaw, pitch)
         dx = tx - kx * mirror
         reach = max(ty - ky, MIN_REACH_Y)
-        dv = tgt[2] + kz - _press_z(n["is_black"], press_white, press_black)
+        dv = at[2] + kz - tz
         bend = _roll_bearing(_digit_roll(n["finger"], mirror, dx, reach, dv),
                              math.hypot(dx, reach), dv)
         blo, bhi = _bearing_window(n["finger"], mirror,
@@ -1105,7 +1362,8 @@ def _tip_miss(finger, mirror, dx, dy, dv, dist_flex, roll=0.0):
     return math.dist(tip, (dx, dy, dv))
 
 
-def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
+def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black,
+                     pitch=(0.0, 0.0)):
     """How badly a wrist placement serves this event's pressing fingers.
 
     Three things go wrong, and they pull against each other:
@@ -1128,7 +1386,12 @@ def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
     settles by splitting the difference between its fingers rather than pinning
     one at its limit. The miss is weighted the heavier: a fingertip visibly off
     its key reads worse than a few degrees of knuckle. Both the press and the
-    hover pose are scored, since the hand holds one wrist position for both.
+    hover pose are scored, since the hand holds one wrist position for both -
+    and each in the tilt the wrist stroke has the hand at when it happens
+    (`pitch`, flexed at the bottom and cocked up over the hover). One placement
+    has to serve the whole of that swing, so scoring it at the two extremes is
+    what keeps a chord the hand drops into from being fitted flat and then
+    played tilted.
     """
     has_black = any(n["is_black"] for n in event["notes"])
     cost = 0.0
@@ -1136,12 +1399,14 @@ def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
         spec = FINGERS[n["finger"]]
         kx, ky, kz = spec["knuckle"]
         press_z = _press_z(n["is_black"], press_white, press_black)
-        tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
-        dx, dy = tx - kx * mirror, ty - ky
         cap = _splay_range(n["finger"], mirror)
-        for dv, flex in ((tgt[2] + kz - press_z, DIST_FLEX_PRESS),
-                         (tgt[2] + kz - (press_z + HOVER_LIFT),
-                          DIST_FLEX_HOVER)):
+        for tip_z, flex, tilt in ((press_z, DIST_FLEX_PRESS, pitch[0]),
+                                  (press_z + HOVER_LIFT, DIST_FLEX_HOVER,
+                                   pitch[1])):
+            at = _stroke_wrist(tgt, yaw, tilt)
+            tx, ty, tz = _hand_frame(
+                (n["x"], _target_y(n, has_black), tip_z), at, yaw, tilt)
+            dx, dy, dv = tx - kx * mirror, ty - ky, at[2] + kz - tz
             roll = _digit_roll(n["finger"], mirror, dx, dy, dv)
             cost += REACH_W * _tip_miss(n["finger"], mirror, dx, dy, dv,
                                         flex, roll) ** 2
@@ -1153,47 +1418,80 @@ def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
     return cost
 
 
-def _wrist_fit(events, targets, yaws, mirror, press_white, press_black):
+def _fit_event(event, tgt, mirror, yaw, pitch, press_white, press_black):
+    """One event's best wrist placement at one stroke depth, as (cost, target).
+
+    The grid: in and out from the keys (y) and down from the hover height (z),
+    with the sideways clamp re-applied at each candidate since moving in or out
+    changes how far the fingers can splay.
+    """
+    base = _splay_clamp(event, tgt, mirror, yaw, press_white, press_black,
+                        pitch[0])
+    best = (_event_pose_cost(event, base, mirror, yaw, press_white,
+                             press_black, pitch), base)
+    if best[0] <= 0.0:
+        return best
+    steps = int(WRIST_Y_RANGE / WRIST_Y_STEP)
+    for i in range(-steps, steps + 1):
+        dy = i * WRIST_Y_STEP
+        z = tgt[2]
+        while z >= MIN_WRIST_Z - 1e-9:
+            cand = _splay_clamp(event, (tgt[0], tgt[1] + dy, z), mirror,
+                                yaw, press_white, press_black, pitch[0])
+            cost = (_event_pose_cost(event, cand, mirror, yaw, press_white,
+                                     press_black, pitch)
+                    + WRIST_REG * (dy * dy + (tgt[2] - z) ** 2))
+            if cost < best[0]:
+                best = (cost, cand)
+            z -= WRIST_Z_STEP
+    return best
+
+
+def _wrist_fit(events, targets, yaws, flexes, mirror, press_white,
+               press_black):
     """Nudge each smoothed wrist target to a placement the fingers can hold.
 
     The smoothed path says where the hand would LIKE to be; this asks what its
     fingers can actually do there, and if the answer is "not this" it searches a
-    small grid around it - in and out from the keys (y) and up and down (z),
-    with the sideways clamp re-applied at each candidate since moving in or out
-    changes how far the fingers can splay - for the placement that best serves
-    the whole event (_event_pose_cost). Moving the hand rather than contorting
-    the fingers is the whole point, and it is what a pianist does: dropping and
-    reaching in for a stretched voicing, riding higher and flatter over the
-    black keys. A regularizer keeps the hand on its smoothed glide wherever the
-    fingers are comfortable, so this only bites where the geometry is tight -
-    ordinary single notes and close chords score zero and do not move at all.
+    small grid around it (_fit_event) for the placement that best serves the
+    whole event. Moving the hand rather than contorting the fingers is the whole
+    point, and it is what a pianist does: dropping and reaching in for a
+    stretched voicing, riding higher and flatter over the black keys. A
+    regularizer keeps the hand on its smoothed glide wherever the fingers are
+    comfortable, so this only bites where the geometry is tight - ordinary
+    single notes and close chords score zero and do not move at all.
+
+    It is also where the WRIST STROKE is settled, because the two decide each
+    other: the fit asks what the fingers can do out of the hand as the stroke
+    will actually hold it, and where the answer is "less than they could out of
+    a level one" the stroke is the thing that gives (PITCH_FIT_STEPS). So this
+    returns the depth each event's stroke ended up with as well as where the
+    hand is held for it.
 
     The events are marked for thumb crossings first, because the sideways clamp
     inside this search is the one place that knows the difference between a
     thumb passing under the hand and a thumb left behind by it.
     """
     _mark_thumb_crossings(events, mirror)
-    out = []
-    for ev, tgt, yaw in zip(events, targets, yaws):
-        base = _splay_clamp(ev, tgt, mirror, yaw, press_white, press_black)
-        best = (_event_pose_cost(ev, base, mirror, yaw, press_white,
-                                 press_black), base)
-        if best[0] > 0.0:
-            steps = int(WRIST_Y_RANGE / WRIST_Y_STEP)
-            for i in range(-steps, steps + 1):
-                dy = i * WRIST_Y_STEP
-                z = tgt[2]
-                while z >= MIN_WRIST_Z - 1e-9:
-                    cand = _splay_clamp(ev, (tgt[0], tgt[1] + dy, z), mirror,
-                                        yaw, press_white, press_black)
-                    cost = (_event_pose_cost(ev, cand, mirror, yaw, press_white,
-                                             press_black)
-                            + WRIST_REG * (dy * dy + (tgt[2] - z) ** 2))
-                    if cost < best[0]:
-                        best = (cost, cand)
-                    z -= WRIST_Z_STEP
-        out.append(best[1])
-    return out
+    out, kept = [], []
+    for ev, tgt, yaw, flex in zip(events, targets, yaws, flexes):
+        level = None
+        for step in PITCH_FIT_STEPS:
+            stroke = (-flex * step, PITCH_PREP_FRAC * flex * step)
+            cost, cand = _fit_event(ev, tgt, mirror, yaw, stroke,
+                                    press_white, press_black)
+            if cost <= REACH_W * PITCH_FIT_SLACK ** 2:
+                break            # free: nothing a level hand could do better
+            if level is None:    # what the fingers manage with no stroke at all
+                level = _fit_event(ev, tgt, mirror, yaw, (0.0, 0.0),
+                                   press_white, press_black)
+            if cost <= level[0] + REACH_W * PITCH_FIT_SLACK ** 2:
+                break
+        else:
+            step, (cost, cand) = 0.0, level
+        out.append(cand)
+        kept.append(flex * step)
+    return out, kept
 
 
 def _smooth_targets(events, targets, sigma=SMOOTH_SIGMA):
@@ -1372,7 +1670,8 @@ def _knuckle(finger, wrist, mirror):
     return (wrist[0] + kx * mirror, wrist[1] + ky, wrist[2] + kz)
 
 
-def _idle_target(finger, knuckle, mirror, hover_z, slide=0.0, retreat=0.0):
+def _idle_target(finger, knuckle, mirror, hover_z, slide=0.0, retreat=0.0,
+                 wrist=(0.0, 0.0, 0.0), pitch=0.0):
     """Where a digit that is not playing puts its fingertip.
 
     Straight ahead of its own knuckle - no sideways reach at all - arched to the
@@ -1383,13 +1682,19 @@ def _idle_target(finger, knuckle, mirror, hover_z, slide=0.0, retreat=0.0):
     digit with little drop left beneath it (a low wrist) has to do instead. A
     retreat also trades reach for height (IDLE_RETREAT_TUCK), so the digit curls
     in rather than pointing up.
+
+    The height is over the KEYS, so it is turned back into the tilted hand's own
+    frame (_local_z): a resting finger waits the same distance above the keybed
+    whatever the wrist stroke is doing above it.
     """
     if finger == 1:
         reach, out = THUMB_IDLE_Y, -mirror * THUMB_IDLE_X
     else:
         reach, out = IDLE_REACH * sum(FINGERS[finger]["lengths"]), 0.0
     reach = max(MIN_REACH_Y, reach - IDLE_RETREAT_TUCK * retreat)
-    return (knuckle[0] + out + slide, knuckle[1] + reach, hover_z + retreat)
+    y = knuckle[1] + reach
+    return (knuckle[0] + out + slide, y,
+            _local_z(hover_z + retreat, y, wrist, pitch))
 
 
 def _in_cage(finger, mirror, yaw, prox, mid, dist_flex, roll=0.0):
@@ -1460,7 +1765,7 @@ def _grid(step, span, signed):
 
 
 def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
-                 obstacles, key_target, mix, budget):
+                 obstacles, key_target, mix, budget, pitch=0.0):
     """Where `finger`'s tip goes so it keeps clear of the chains already placed.
 
     `key_target`/`mix` say what the digit wants: a point on a key, the idle pose
@@ -1487,7 +1792,7 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
     def wish(slide=0.0, retreat=0.0, back=0.0):
         """The tip target `back` of the way further out toward the idle pose."""
         idle = _idle_target(finger, knuckle, mirror, hover_z, slide,
-                            retreat)
+                            retreat, wrist, pitch)
         if key_target is None:
             return idle
         m = mix + (1.0 - mix) * back
@@ -1495,6 +1800,18 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
             return (key_target[0] + slide, key_target[1],
                     key_target[2] + retreat)
         return tuple(k + (i - k) * m for k, i in zip(key_target, idle))
+
+    def height(*nudge):
+        """The world height of a nudged wish - out of the hand's own frame,
+        because the KEYS do not tilt with the wrist."""
+        return _world_z(wish(*nudge), wrist, pitch)
+
+    def sunk(retreat, slide):
+        """How far this nudge would push the digit below the keys AND below
+        where it was going anyway: a digit ON a key is not diving, it is
+        playing."""
+        return max(0.0, min(KEYBED_Z + KEYBED_CLEAR, height(slide))
+                   - height(slide, retreat))
 
     def stray_cost(retreat, slide):
         """What this nudge costs before any clearance it buys is counted.
@@ -1507,11 +1824,12 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
         most of the reach take, is no clearance at all, so it is charged for:
         steeply enough that any pose out in the air wins, gradually enough that
         a digit truly boxed in dips a millimetre rather than crossing.
+
+        Measured against the KEYBED, which is where the keys are and which does
+        not tilt with the wrist (see `sunk`).
         """
-        sunk = max(0.0, min(KEYBED_Z + KEYBED_CLEAR, wish(slide)[2])
-                   - wish(slide, retreat)[2])
         return (IDLE_SLIDE_COST * abs(slide) + IDLE_RETREAT_COST * abs(retreat)
-                + KEYBED_COST * sunk)
+                + KEYBED_COST * sunk(retreat, slide))
 
     # Searched CHEAPEST FIRST, so the wish itself (cost 0) is always tried
     # before any nudge and the first pose the joint cage allows is the nearest
@@ -1525,7 +1843,8 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
                       for retreat in _grid(RETREAT_STEP,
                                            freedom * RETREAT_MAX, True)
                       for slide in _grid(SLIDE_STEP, freedom * SLIDE_MAX,
-                                         True))
+                                         True)
+                      if sunk(retreat, slide) <= KEYBED_DIVE_MAX)
 
     def search(nudges, back):
         """Best (clearance, target) over the whole grid, withdrawn by `back`.
@@ -1662,24 +1981,51 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     # smoothing as the position - they must travel together, or the hand would
     # snap round between two events it glides between - and the fit then re-scores
     # each event's fingers in the frame that yaw puts them in.
+    #
+    # How far the wrist FLEXES into each event is settled first, because the fit
+    # has to ask what the fingers can do out of the hand as the stroke will
+    # actually hold it - tilted, and swung around its hinge - rather than out of
+    # a level one. It is a property of the event alone: how loud, how wide, and
+    # how much room the passage leaves for a gesture. So nothing here is
+    # circular, and a placement is still just (x, y, z, yaw) - where the hand is
+    # HELD, with the stroke moving around it.
+    _mark_thumb_crossings(events, mirror)   # the stroke has to know about them
+    flexes = [_event_flex(ev, _event_room(events, i))
+              for i, ev in enumerate(events)]
     yaws = [_event_yaw(ev, mirror) for ev in events]
-    smoothed = _smooth_targets(events, [_event_root_target(ev, mirror, y) + (y,)
-                                        for ev, y in zip(events, yaws)])
+    smoothed = _smooth_targets(
+        events, [_event_root_target(ev, mirror, y) + (y,)
+                 for ev, y in zip(events, yaws)])
     yaws = [s[3] for s in smoothed]
-    targets = [t + (y,) for t, y in zip(
-        _wrist_fit(events, [s[:3] for s in smoothed], yaws, mirror,
-                   press_depth_white, press_depth_black), yaws)]
+    fitted, flexes = _wrist_fit(events, [s[:3] for s in smoothed], yaws, flexes,
+                                mirror, press_depth_white, press_depth_black)
+    targets = [t + (y,) for t, y in zip(fitted, yaws)]
 
-    # Kept as well as keyed: the finger solve below needs to know where the
-    # wrist actually is at each frame it poses a finger, not just where the
-    # event it belongs to wanted it.
+    # The pitch is a curve of its own, on its own key times: the wrist stroke
+    # runs on the MUSIC's clock (cock up, strike, rebound, settle), while the
+    # position and the yaw run on the hand's travel schedule, and neither has
+    # any business keying the other's channel. So the object's rotation is keyed
+    # one axis at a time - Z where the hand arrives and travels, X where the
+    # stroke turns over - and the two curves cross without disturbing each
+    # other.
+    pitch_keys = _pitch_keys(events, flexes, to_frame, frame_start, fps)
+
+    arm_obj.rotation_euler = (0.0, 0.0, 0.0)   # nothing keys Y; it stays level
+    for frame, (pitch,) in pitch_keys:
+        arm_obj.rotation_euler[0] = pitch
+        arm_obj.keyframe_insert(data_path="rotation_euler", index=0,
+                                frame=frame)
+
+    # The wrist path is PLANNED here and keyed further down, once the stroke has
+    # been laid over it: the hinge moves the wrist, so every moment the pitch
+    # turns over needs a placement of its own, and those moments belong to the
+    # music rather than to the hand's travel schedule. Keeping the list is what
+    # the finger solve wants anyway - it needs to know where the wrist actually
+    # is at each frame it poses a finger, not just where the event it belongs to
+    # wanted it.
     wrist_keys = []
 
     def key_root(t, target):
-        arm_obj.location = target[:3]
-        arm_obj.rotation_euler = (0.0, 0.0, target[3])
-        arm_obj.keyframe_insert(data_path="location", frame=to_frame(t))
-        arm_obj.keyframe_insert(data_path="rotation_euler", frame=to_frame(t))
         wrist_keys.append((to_frame(t), target))
 
     # When the wrist leaves each event and when it has to be at the next one.
@@ -1774,6 +2120,32 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             key_root(leave + u * span, tuple(p))
             arc_keys.append((f, (lift,)))
     arc_keys.sort(key=lambda k: k[0])
+
+    # The stroke, laid over the path the hand travels. Where the pitch turns
+    # over between two wrist keys the placement is read off the path there and
+    # becomes a key of its own, so the hinge can move the wrist without the
+    # curve cutting the corner; then every placement is swung onto the hinge for
+    # whatever the pitch is doing at it. From here on `wrist_keys` is where the
+    # wrist actually is - which is what the fingers are solved against and what
+    # the pianist's arm will follow.
+    wrist_keys.sort(key=lambda k: k[0])
+    keyed = {fr for fr, _t in wrist_keys}
+    wrist_keys += [(fr, _sample(wrist_keys, fr, _ease_wrist))
+                   for fr, _p in pitch_keys
+                   if fr not in keyed
+                   and wrist_keys[0][0] < fr < wrist_keys[-1][0]]
+    wrist_keys.sort(key=lambda k: k[0])
+    wrist_keys = [(fr, _stroke_wrist(t, t[3],
+                                     _sample(pitch_keys, fr, _ease_wrist)[0])
+                   + (t[3],))
+                  for fr, t in wrist_keys]
+
+    for frame, target in wrist_keys:
+        arm_obj.location = target[:3]
+        arm_obj.rotation_euler[2] = target[3]
+        arm_obj.keyframe_insert(data_path="location", frame=frame)
+        arm_obj.keyframe_insert(data_path="rotation_euler", index=2,
+                                frame=frame)
 
     # --- fingers -----------------------------------------------------------
     # Each finger first gets a PLAN: where its fingertip should be at a handful
@@ -1924,6 +2296,7 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     moments = sorted({frame_start}
                      | {fr for fr, _loc in wrist_keys}
                      | {fr for fr, _lift in arc_keys}
+                     | {fr for fr, _pitch in pitch_keys}
                      | {e[0] for plan in plans.values() for e in plan})
 
     def solve_at(frame):
@@ -1937,19 +2310,26 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         # clearance, just higher up.
         wx, wy, wz, yaw = _sample(wrist_keys, frame, _ease_wrist)
         lift = _sample(arc_keys, frame, _ease_wrist)[0]
-        # The whole hand is solved in ITS OWN frame (_hand_xy): the wrist at the
-        # origin with the fingers along +y, which is the frame the bones are
+        pitch = _sample(pitch_keys, frame, _ease_wrist)[0]
+        # The whole hand is solved in ITS OWN frame (_hand_frame): the wrist at
+        # the origin with the fingers along +y, which is the frame the bones are
         # posed in and the one every offset in build_hands.FINGERS is written
-        # in. Only the keys have to be brought into it. Heights are untouched by
-        # a yaw, so z stays the world height throughout.
+        # in. Only the keys have to be brought into it - turned by the yaw and
+        # tilted by the wrist stroke's pitch, both of which the object carries
+        # above the bones, so the fingers see a key that moves under a hand that
+        # is otherwise still.
         wrist = (0.0, 0.0, wz)
         knuckles, digits = {}, []
         for f in FINGERS:
             knuckles[f] = _knuckle(f, wrist, mirror)
             target, flex, mix, give = _sample_plan(plans[f], frame)
             if target is not None:
-                target = _hand_xy(target, (wx, wy, wz), yaw)
-                target = (target[0], target[1], target[2] + lift * give)
+                # The arc rides on the key target in WORLD height, before the
+                # tilt: it is the hand leaving the keyboard, not the hand
+                # turning over.
+                target = _hand_frame((target[0], target[1],
+                                      target[2] + lift * give),
+                                     (wx, wy, wz), yaw, pitch)
             digits.append((max(mix, HOVER_GIVE * give), f, target, flex, mix,
                            give))
         # Least free first: the finger holding a key down is placed exactly
@@ -1963,7 +2343,8 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             for budget, f, target, flex, mix, give in order:
                 target, clear = _solve_clear(f, knuckles[f], mirror, wrist,
                                              hover_z + lift * give,
-                                             flex, placed, target, mix, budget)
+                                             flex, placed, target, mix, budget,
+                                             pitch)
                 if clear < worst:
                     worst, blocked = clear, (f if budget > 0.0 else None)
                 roll = _target_roll(f, mirror, knuckles[f], target)
