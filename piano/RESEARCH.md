@@ -189,26 +189,48 @@ Every phalanx is caged with a local `LIMIT_ROTATION` constraint at build time
 and for the thumb: CMC ~15–20° flexion/extension but **45–60° of palmar/radial
 abduction**, MCP ~55° flexion, IP ~80° flexion with 15–20° hyperextension.
 
+The thumb's sideways bound is the one **lopsided** joint in the hand, and it is
+the only cage that flips with the side of the body. All of that 45–60° is
+*abduction*, away from the palm: zero in this rig is the thumb lying alongside
+the index, which is already the end of its adduction, and a real thumb crosses
+the palm by rotating **under** it (palmar flexion and opposition — carried here
+by the metacarpal's pitch) rather than swinging further into the index it is
+touching. Capped symmetrically at 45°, the solve took the second option, and on
+the reach take the right thumb lay flat in the palm plane and swung 32° *past*
+the index — threading between the index and middle fingers at 98% of its own
+extension — to hold a key 42 mm treble-ward of a wrist the smoothing had left
+behind. `THUMB_CMC_ADDUCT` (12°) is what it may do toward the palm; the wrist
+takes back the rest of the reach.
+
 Two joints are deliberately looser than their own norm, for the same reason as
 on the guitar: the closed-form IK lumps the distal phalanx into the middle
 link, so `f<n>_mid` carries the **combined** PIP+DIP (~190°) — or, on the
 thumb, MCP+IP (~135°) — fold, while `f<n>_dist` holds a fixed natural flexion.
-The constraints are pure guards: the shipped performance keyframes *inside*
-the cage on every bone and every frame, with ~3° to spare at the tightest
-(verified in-scene against the baked action).
+The constraints are guards, and nothing is allowed to lean on them: a keyframe
+past a `LIMIT_ROTATION` is not a pose that plays, it is a pose Blender rewrites
+at render time, so the hand that shows up is one nothing solved, checked for
+clearance or measured for range of motion. The clearance search already refuses
+out-of-cage candidates; `_cage_pose` catches the digit whose *whole* search the
+cage rejects and pulls its wish inside before it is keyed, so the fingertip
+sits off its key by exactly what the joint could not do — a hand short of a
+key, not a broken one. The reach take used to key the right thumb 48° back at
+the CMC and show it at the cage's 30°; both takes now key *inside* the cage on
+every bone and every frame (verified in-scene against the baked actions).
 
 ### Reaching is the wrist's job
 
 The animator caps the IK's knuckle yaw at the anatomical `FINGER_MCP_SPLAY`
-(26°; the thumb's CMC gets `THUMB_CMC_SPLAY`, 45°). Uncapped it splayed
-pressing fingers up to 48° on the demo — a finger swinging sideways under its
-neighbours rather than a hand moving. So the *wrist* does the reaching, in
-three places:
+(26°; the thumb's CMC gets the lopsided `THUMB_CMC_ABDUCT` / `THUMB_CMC_ADDUCT`
+pair, 45° and 12°). Uncapped it splayed pressing fingers up to 48° on the demo —
+a finger swinging sideways under its neighbours rather than a hand moving. So
+the *wrist* does the reaching, in three places:
 
-- **`_splay_clamp_x`** slides the wrist along the keyboard until every
-  pressing finger's key is within its splay window (`tan(cap) ×` the
-  knuckle-to-key distance). The Gaussian-smoothed glide — what produces the
-  crossunder/crossover look — survives wherever the fingers can absorb it.
+- **`_splay_clamp`** slides the wrist along the keyboard until every pressing
+  finger's key is within its splay window (`tan(bound) ×` the knuckle-to-key
+  distance, measured from the knuckle in the same signed bounds the IK clamps
+  its yaw to, so the thumb's window is as lopsided as its joint). The
+  Gaussian-smoothed glide — what produces the crossunder/crossover look —
+  survives wherever the fingers can absorb it.
 - **`BLACK_KEY_LIFT`** rides the hand ~18 mm higher over any event touching a
   black key. Black keys sit 12 mm up and 55 mm further in, leaving so little
   drop from knuckle to fingertip that the fingers folded *backward* (~39° of

@@ -148,22 +148,38 @@ FINGER_ROT_LIMIT = {
 #     of palmar/radial ABDUCTION -- the widest sideways range in the hand. This
 #     rig builds the thumb pointing +y in the palm plane rather than rotated
 #     palmarly out of it, so its prox bone lumps that palmar rotation in with
-#     CMC flexion; the x range is correspondingly generous.
+#     CMC flexion; the x range is correspondingly generous. Sideways it is the
+#     one LOPSIDED bound in the hand: the wide swing is all abduction, away from
+#     the palm, because zero here is already the thumb lying against the index
+#     and a real one gets across the palm by rotating UNDER it rather than
+#     swinging further into it (see animate_hands.THUMB_CMC_ADDUCT, whose 12 deg
+#     this leaves a little headroom over). Written for a RIGHT hand -- rz is
+#     -yaw, so abduction is +z there -- and flipped for the left by rot_limit.
 #   * MCP: flexion ~55, extension ~0-10, a few degrees of passive splay. As with
 #     the fingers' PIP, the IK folds the distal phalanx into this link, so the
 #     bone carries the COMBINED MCP+IP flexion (~135 deg in a real thumb) and is
 #     capped there rather than at the MCP's own 55.
 #   * IP: flexion ~80, hyperextension ~15-20 (thumbs really do bend back).
 THUMB_ROT_LIMIT = {
-    "prox": {"x": (-75.0, 30.0), "y": (-15.0, 15.0), "z": (-50.0, 50.0)},   # CMC
+    "prox": {"x": (-75.0, 30.0), "y": (-15.0, 15.0), "z": (-17.0, 50.0)},   # CMC
     "mid":  {"x": (-120.0, 12.0), "y": (-10.0, 10.0), "z": (-12.0, 12.0)},  # MCP(+lumped IP)
     "dist": {"x": (-85.0, 20.0), "y": (-5.0, 5.0),   "z": (-6.0, 6.0)},     # IP
 }
 
 
-def rot_limit(finger, seg):
-    """The ROM cage for one phalanx: the thumb chain has its own."""
-    return (THUMB_ROT_LIMIT if finger == 1 else FINGER_ROT_LIMIT)[seg]
+def rot_limit(finger, seg, mirror=1.0):
+    """The ROM cage for one phalanx: the thumb chain has its own.
+
+    `mirror` is the hand (-1 for a left), which matters only where a bound is
+    lopsided - the thumb's sideways range, which opens toward whichever side of
+    the hand its own thumb sits on. The fingers' bounds are symmetric, so the
+    flip leaves them exactly as they are.
+    """
+    limit = (THUMB_ROT_LIMIT if finger == 1 else FINGER_ROT_LIMIT)[seg]
+    if mirror > 0:
+        return limit
+    lo, hi = limit["z"]
+    return {**limit, "z": (-hi, -lo)}
 
 
 # Where idle hands rest before/after playing (animator overrides location).
@@ -271,7 +287,8 @@ def build_hand(side, coll, mat):
     # Cage each phalanx to its human range of motion (one-way flexion hinges).
     for f in FINGERS:
         for seg in ("prox", "mid", "dist"):
-            _limit_rot(arm_obj.pose.bones[f"f{f}_{seg}"], rot_limit(f, seg))
+            _limit_rot(arm_obj.pose.bones[f"f{f}_{seg}"],
+                       rot_limit(f, seg, mirror))
 
     for f, spec in FINGERS.items():
         for seg, length in zip(("prox", "mid", "dist"), spec["lengths"]):

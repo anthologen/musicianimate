@@ -23,10 +23,12 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
   - Finger bones are driven by closed-form two-link IK in the vertical
     plane through the knuckle: the proximal bone pitches, the middle joint
     flexes, the proximal z-rotation supplies sideways reach (capped at the
-    knuckle's anatomical abduction), and the distal phalanx keeps a fixed
-    natural flexion. No IK constraints are used, so the result is plain
-    baked FK keyframes - every one of which lands inside the joint cage
-    build_hands.py puts on the bones.
+    knuckle's anatomical abduction - which for the THUMB is lopsided, wide
+    away from the palm and barely open toward it), and the distal phalanx
+    keeps a fixed natural flexion. No IK constraints are used, so the result
+    is plain baked FK keyframes - every one of which lands inside the joint
+    cage build_hands.py puts on the bones, _cage_pose being what guarantees
+    it rather than leaving the bone constraints to rewrite the pose.
   - The whole hand is solved together, at the union of every finger's
     keyframe times, so no two fingers pass through each other: a finger
     with no note to play settles back over its own knuckle instead of
@@ -96,8 +98,27 @@ RELAXED = (0.45, 0.70, 0.40)  # prox/mid/dist downward flexion at rest
 # The thumb is not a finger: its CMC saddle joint carries 45-60 deg of palmar/
 # radial abduction, and that wide swing is exactly what a thumb-under in a scale
 # run is made of, so it gets its own (much larger) cap.
+#
+# But only ONE WAY. A finger's knuckle deviates either side of straight ahead by
+# about as much, so a single cap describes it; the thumb's range is wildly
+# lopsided. Away from the palm (abduction) it opens the 45-60 deg web space that
+# spans a tenth. TOWARD the palm it has almost nothing: yaw 0 in this rig is the
+# thumb lying alongside the index, which is already the end of the joint's
+# adduction - a real thumb gets across the palm by rotating UNDER it (palmar
+# flexion and opposition, which this rig carries as the metacarpal's pitch), not
+# by swinging further sideways into the index it is touching.
+#
+# Capped symmetrically at 45 deg, the solve took the second option: on the reach
+# take the right thumb lay flat in the palm plane and swung 32 deg PAST the
+# index, threading between the index and middle fingers, at 98% of its own
+# extension, to hold a key 42 mm treble-ward of a wrist the smoothing had left
+# behind. It reads exactly like what it is - a thumb bent a way a thumb does not
+# bend. So adduction gets a small cap of its own, and the wrist takes back the
+# reach it was borrowing from the joint (_splay_clamp, which now slides the hand
+# along the keyboard until the thumb is inside BOTH bounds).
 FINGER_MCP_SPLAY = math.radians(26.0)
-THUMB_CMC_SPLAY = math.radians(45.0)
+THUMB_CMC_ABDUCT = math.radians(45.0)
+THUMB_CMC_ADDUCT = math.radians(12.0)
 
 # Black keys sit 12 mm above the white keybed and 55 mm further from the player,
 # so a hand held at the white-key hover height has barely any drop left from
@@ -415,9 +436,20 @@ def _event_yaw(event, mirror):
     return max(-cap, min(cap, yaw))
 
 
-def _splay_cap(finger):
-    """How far sideways this digit's knuckle may deviate (radians)."""
-    return THUMB_CMC_SPLAY if finger == 1 else FINGER_MCP_SPLAY
+def _splay_range(finger, mirror):
+    """How far sideways this digit's knuckle may deviate: (lo, hi) radians in
+    the hand's own frame, positive toward the little finger.
+
+    Symmetric for the fingers. For the thumb the two directions are different
+    joints' worth of motion (see THUMB_CMC_ABDUCT), and which one is which
+    depends on the hand: the thumb sits at -x on a right hand and +x on a left,
+    so moving toward the palm - the tight direction - is +yaw on the right and
+    -yaw on the left.
+    """
+    if finger != 1:
+        return (-FINGER_MCP_SPLAY, FINGER_MCP_SPLAY)
+    return ((-THUMB_CMC_ABDUCT, THUMB_CMC_ADDUCT) if mirror > 0 else
+            (-THUMB_CMC_ADDUCT, THUMB_CMC_ABDUCT))
 
 
 def _hyperext_cap(finger):
@@ -431,8 +463,10 @@ def _finger_ik(dx, dy, dv, lengths, dist_flex, splay_cap=MAX_YAW):
     dx/dy: fingertip target offset from the knuckle in the keyboard plane;
     dv: drop from knuckle to target (positive down); dist_flex: the fixed
     distal flexion the pose will use; splay_cap: the knuckle's anatomical
-    sideways limit (the caller's business - the guitar/bass fret hands clamp
-    the returned yaw themselves, so the default is the old loose value).
+    sideways limit, either a symmetric cap or a signed (lo, hi) pair for a
+    joint whose two directions differ (the thumb's - see _splay_range). It is
+    the caller's business either way: the guitar/bass fret hands clamp the
+    returned yaw themselves, so the default is the old loose value.
     The mid+distal pair is treated as one link along the elbow-to-tip chord
     (length b, hanging gamma below the mid bone), which makes the fingertip
     land exactly on the target.
@@ -442,8 +476,9 @@ def _finger_ik(dx, dy, dv, lengths, dist_flex, splay_cap=MAX_YAW):
     l2, l3 = lengths[1], lengths[2]
     b = math.hypot(l2 + l3 * math.cos(dist_flex), l3 * math.sin(dist_flex))
     gamma = math.atan2(l3 * math.sin(dist_flex), l2 + l3 * math.cos(dist_flex))
-    yaw = max(-splay_cap,
-              min(splay_cap, math.atan2(dx, max(dy, MIN_REACH_Y))))
+    lo, hi = (-splay_cap, splay_cap) if isinstance(splay_cap,
+                                                   (int, float)) else splay_cap
+    yaw = max(lo, min(hi, math.atan2(dx, max(dy, MIN_REACH_Y))))
     dh = math.hypot(dx, dy)
     d = math.hypot(dh, dv)
     d = max(abs(a - b) + 0.002, min(a + b - 0.002, d))
@@ -574,16 +609,23 @@ def _splay_clamp(event, tgt, mirror, yaw):
     "Sideways" is ACROSS THE HAND, not across the keyboard: sliding along the
     hand's own x is what changes a finger's splay without also changing how far
     it has to reach, so with the hand turned out the slide follows it.
+
+    The window is only symmetric about the digit's key when its joint is: it is
+    measured from the KNUCKLE, in the same signed bounds the IK clamps its yaw
+    to (_splay_range), so the thumb's - wide on the side it abducts toward and
+    barely open on the other - makes the hand travel along the keyboard where it
+    used to let the thumb reach across the palm.
     """
     has_black = any(n["is_black"] for n in event["notes"])
     lo, hi = float("-inf"), float("inf")
     for n in event["notes"]:
-        _kx, ky, _kz = FINGERS[n["finger"]]["knuckle"]
+        kx, ky, _kz = FINGERS[n["finger"]]["knuckle"]
         tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
-        dx = tx - _digit_offset_x(n, mirror)
-        span = math.tan(_splay_cap(n["finger"])) * max(ty - ky, MIN_REACH_Y)
-        lo = max(lo, dx - span)
-        hi = min(hi, dx + span)
+        dx = tx - kx * mirror
+        reach = max(ty - ky, MIN_REACH_Y)
+        ylo, yhi = _splay_range(n["finger"], mirror)
+        lo = max(lo, dx - math.tan(yhi) * reach)
+        hi = min(hi, dx - math.tan(ylo) * reach)
     slide = (lo + hi) / 2.0 if lo > hi else max(lo, min(hi, 0.0))
     return (tgt[0] + slide * math.cos(yaw),
             tgt[1] + slide * math.sin(yaw), tgt[2])
@@ -630,7 +672,7 @@ def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black):
         press_z = _press_z(n["is_black"], press_white, press_black)
         tx, ty, _tz = _hand_xy((n["x"], _target_y(n, has_black), 0.0), tgt, yaw)
         dx, dy = tx - kx * mirror, ty - ky
-        cap = _splay_cap(n["finger"])
+        cap = _splay_range(n["finger"], mirror)
         for dv, flex in ((tgt[2] + kz - press_z, DIST_FLEX_PRESS),
                          (tgt[2] + kz - (press_z + HOVER_LIFT),
                           DIST_FLEX_HOVER)):
@@ -853,7 +895,7 @@ def _idle_target(finger, knuckle, mirror, hover_z, slide=0.0, retreat=0.0):
     return (knuckle[0] + out + slide, knuckle[1] + reach, hover_z + retreat)
 
 
-def _in_cage(finger, yaw, prox, mid, dist_flex):
+def _in_cage(finger, mirror, yaw, prox, mid, dist_flex):
     """Whether this pose lands inside build_hands' joint cage.
 
     The LIMIT_ROTATION constraints on the bones are guards, never clampers: a
@@ -863,7 +905,7 @@ def _in_cage(finger, yaw, prox, mid, dist_flex):
     """
     for seg, rx, rz in (("prox", -prox, -yaw), ("mid", -mid, 0.0),
                         ("dist", -dist_flex, 0.0)):
-        limit = rot_limit(finger, seg)
+        limit = rot_limit(finger, seg, mirror)
         for axis, val in (("x", rx), ("z", rz)):
             lo, hi = limit[axis]
             if not math.radians(lo) <= val <= math.radians(hi):
@@ -871,11 +913,34 @@ def _in_cage(finger, yaw, prox, mid, dist_flex):
     return True
 
 
-def _pose_from_target(finger, knuckle, target, dist_flex):
+def _cage_pose(finger, mirror, pose, dist_flex):
+    """`pose`, pulled inside build_hands' joint cage.
+
+    Nothing may be KEYED outside it either. A keyframe past a LIMIT_ROTATION is
+    not a pose that plays: Blender rewrites it at render time, and the hand that
+    then shows up is one nothing solved, checked for clearance or measured for
+    range of motion - on the reach take that was a thumb keyed 48 deg back at
+    the CMC and shown at the cage's 30. _solve_clear already refuses out-of-cage
+    candidates, but a digit whose whole search the cage rejects falls back on
+    what it wished for; this is where that wish is made honest. The tip then
+    sits off its key by exactly what the joint could not do, which is the truth
+    about the reach and reads as one - a hand short of a key, not a broken one.
+    """
+    def clamp(val, bounds):
+        lo, hi = bounds
+        return max(math.radians(lo), min(math.radians(hi), val))
+
+    yaw, prox, mid = pose
+    prox_lim = rot_limit(finger, "prox", mirror)
+    return (-clamp(-yaw, prox_lim["z"]), -clamp(-prox, prox_lim["x"]),
+            -clamp(-mid, rot_limit(finger, "mid", mirror)["x"]))
+
+
+def _pose_from_target(finger, mirror, knuckle, target, dist_flex):
     """(yaw, prox, mid) putting this finger's tip on a world-space target."""
     return _finger_ik(target[0] - knuckle[0], target[1] - knuckle[1],
                       knuckle[2] - target[2], FINGERS[finger]["lengths"],
-                      dist_flex, _splay_cap(finger))
+                      dist_flex, _splay_range(finger, mirror))
 
 
 def _grid(step, span, signed):
@@ -944,8 +1009,8 @@ def _solve_clear(finger, knuckle, mirror, wrist, hover_z, dist_flex,
     best, fallback = None, None
     for cost, retreat, slide in nudges:
         target = wish(slide, retreat)
-        pose = _pose_from_target(finger, knuckle, target, dist_flex)
-        if not _in_cage(finger, *pose, dist_flex):
+        pose = _pose_from_target(finger, mirror, knuckle, target, dist_flex)
+        if not _in_cage(finger, mirror, *pose, dist_flex):
             continue
         if fallback is None:
             fallback = target
@@ -1258,7 +1323,9 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             target = _solve_clear(f, knuckles[f], mirror, wrist,
                                   hover_z + lift * give,
                                   flex, placed, target, mix, budget)
-            pose = _pose_from_target(f, knuckles[f], target, flex)
+            pose = _cage_pose(f, mirror,
+                              _pose_from_target(f, mirror, knuckles[f],
+                                                target, flex), flex)
             _pose_finger(pbones, f, *pose, flex, frame)
             placed.append((f, _finger_chain(knuckles[f], FINGERS[f]["lengths"],
                                             *pose, flex)))
