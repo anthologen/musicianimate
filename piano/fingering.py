@@ -315,6 +315,21 @@ def _chord_states(sounding, factor):
     return states
 
 
+def _drop_unisons(sounding):
+    """One finger per key: collapse notes of a hand that sound the SAME pitch
+    at once (a doubled unison between voices, common enough in real scores)
+    down to the one that started first. _chord_states requires a strictly
+    positive span between every finger pair, so a unison left in would leave a
+    chord with no feasible assignment at all."""
+    kept, seen = [], set()
+    for note in sorted(sounding, key=lambda n: n["start"]):
+        if note["q"] in seen:
+            continue
+        seen.add(note["q"])
+        kept.append(note)
+    return sorted(kept, key=lambda n: n["q"])
+
+
 def _state_cost(sounding, fingers, factor):
     """Vertical (within-chord) ergonomic cost of one assignment."""
     cost = 0.0
@@ -410,10 +425,25 @@ def finger_hand(hand_notes, hand, hand_size="M", beam=BEAM_WIDTH):
                 sounding.remove(drop)
         soundings.append(sounding)
 
+        sounding = _drop_unisons(sounding)
+        soundings[-1] = sounding
+
         candidates = _chord_states(sounding, factor)
         if not candidates:
             # Impossible stretch even at practical limits: release all holds.
-            sounding = sorted(ev["notes"], key=lambda n: n["q"])[:5]
+            sounding = _drop_unisons(
+                sorted(ev["notes"], key=lambda n: n["q"]))[:5]
+            soundings[-1] = sounding
+            candidates = _chord_states(sounding, factor)
+        while not candidates and len(sounding) > 1:
+            # Still unplayable: this hand has been handed notes it cannot span
+            # at all (an extreme two-handed voicing that landed on one side).
+            # Shed the more isolated outer note - the labeling pass below gives
+            # it its neighbour's finger - until what is left is reachable. A
+            # single note always is, so this terminates.
+            drop_low = ((sounding[1]["q"] - sounding[0]["q"]) >
+                        (sounding[-1]["q"] - sounding[-2]["q"]))
+            sounding = sounding[1:] if drop_low else sounding[:-1]
             soundings[-1] = sounding
             candidates = _chord_states(sounding, factor)
 

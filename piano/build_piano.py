@@ -42,6 +42,16 @@ except ImportError:
     )
 
 
+# Case dimensions the seated player also needs (see build_case): the keybed slab
+# hangs CASE_BODY_H below the key surface and the trestle legs another
+# CASE_LEG_H, so the floor -- which is what the pianist's stool and feet stand
+# on -- is that far below z = 0. Kept module-level so build_pianist.py can
+# derive the seat/floor heights from the same numbers the case is built from.
+CASE_BODY_H = 0.07
+CASE_LEG_H = 0.62
+FLOOR_Z = -(CASE_BODY_H + CASE_LEG_H)
+
+
 def _make_cube_mesh(name, sx, sy, sz):
     mesh = bpy.data.meshes.new(name)
     bm = bmesh.new()
@@ -120,7 +130,7 @@ def build_case(piano_coll, total_width):
 
     body_w = total_width + 0.03
     body_depth = WHITE_LEN + 0.16
-    body_h = 0.07
+    body_h = CASE_BODY_H
     body_y_center = (body_depth / 2.0) - 0.005
     add_box("Case_Body", body_w, body_depth, body_h, (0, body_y_center, -body_h / 2.0))
 
@@ -128,7 +138,7 @@ def build_case(piano_coll, total_width):
     rail_y = body_depth - rail_depth / 2.0
     add_box("Case_BackRail", body_w, rail_depth, rail_h, (0, rail_y, rail_h / 2.0))
 
-    leg_h, leg_thick = 0.62, 0.02
+    leg_h, leg_thick = CASE_LEG_H, 0.02
     leg_depth = body_depth - 0.04
     leg_x = body_w / 2.0 - leg_thick / 2.0 - 0.01
     leg_z = -body_h - leg_h / 2.0
