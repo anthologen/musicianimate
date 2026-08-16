@@ -153,15 +153,24 @@ FINGER_ROT_LIMIT = {
 #     the palm, because zero here is already the thumb lying against the index
 #     and a real one gets across the palm by rotating UNDER it rather than
 #     swinging further into it (see animate_hands.THUMB_CMC_ADDUCT, whose 12 deg
-#     this leaves a little headroom over). Written for a RIGHT hand -- rz is
-#     -yaw, so abduction is +z there -- and flipped for the left by rot_limit.
+#     this leaves a little headroom over; the 60 deg abduction cap it leaves room
+#     for is the top of the range, because in this rig the yaw also pays for the
+#     bearing the roll below costs). Written for a RIGHT hand -- rz is -yaw, so
+#     abduction is +z there -- and flipped for the left by rot_limit.
+#     The saddle also PRONATES the column about its own length, the other half
+#     of opposition, and unlike a finger's few degrees of passive twist that is
+#     a real 45-90 deg of active rotation. It is what turns the thumb's flexion
+#     out of the vertical plane so the tip folds across the palm rather than
+#     hooking into the keyboard (animate_hands.THUMB_ROLL, 35 deg, which this
+#     leaves headroom over). Symmetric, so it needs no flip: the roll simply
+#     changes sign with the hand, toward whichever side the palm is on.
 #   * MCP: flexion ~55, extension ~0-10, a few degrees of passive splay. As with
 #     the fingers' PIP, the IK folds the distal phalanx into this link, so the
 #     bone carries the COMBINED MCP+IP flexion (~135 deg in a real thumb) and is
 #     capped there rather than at the MCP's own 55.
 #   * IP: flexion ~80, hyperextension ~15-20 (thumbs really do bend back).
 THUMB_ROT_LIMIT = {
-    "prox": {"x": (-75.0, 30.0), "y": (-15.0, 15.0), "z": (-17.0, 50.0)},   # CMC
+    "prox": {"x": (-75.0, 30.0), "y": (-45.0, 45.0), "z": (-17.0, 65.0)},   # CMC
     "mid":  {"x": (-120.0, 12.0), "y": (-10.0, 10.0), "z": (-12.0, 12.0)},  # MCP(+lumped IP)
     "dist": {"x": (-85.0, 20.0), "y": (-5.0, 5.0),   "z": (-6.0, 6.0)},     # IP
 }

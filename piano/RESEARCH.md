@@ -482,6 +482,118 @@ The 530 mm leap's frame-to-frame speed now reads 2, 16, 39, 63, 81, 90, 87, 74,
 clearance improves with it (the worst is now press depth), and the extra time
 costs one more point of note length: 86% held rather than 87%.
 
+## Fingers that cannot pass through one another
+
+Everything above places a digit against the *keyboard*. What it does not settle
+is what the five do to **each other**: each finger's IK aims at its own key and
+knows nothing about where its neighbours are, and `_solve_clear` — which does —
+could only nudge a digit a few millimetres around the pose it already wanted.
+Measured on the baked curves of the reach take, phalanx capsule against phalanx
+capsule, that left 24 rendered frames with two digits inside each other, the
+worst by 15 mm; the demo take, 85 frames and 13 mm. Three distinct causes:
+
+- **A finger reaching for its key through the finger still holding one.** The
+  left middle finger's approach to B0 began four frames before the note, while
+  the ring finger still held the A♯ behind it — and the *approach* pose is on
+  the far side of that finger, so no nudge around it helps. What a hand does
+  there is wait: the finger stays back over its own knuckle and goes to the key
+  once the neighbour lifts. A digit whose grid cannot clear its neighbours now
+  **withdraws** toward its idle pose in steps (`WITHDRAW_STEPS`) and takes the
+  first one that gets it out. It costs nothing to look at, because the finger
+  has no note yet; it simply arrives from further out (0.65 → 0.83 m/s of tip
+  speed on the drop, still inside a real strike).
+- **A splayed finger pressing into a neighbour that is already home.** MCP
+  abduction caps at ~25°, and a finger *at* that cap is 19 mm sideways of its
+  own knuckle — but adjacent knuckles are only 26 mm apart and two proximal
+  phalanges need ~17 mm between their axes, so 25° of adduction toward a
+  neighbour is a pose no amount of joint range makes room for. The neighbour
+  has to move, which is exactly what a real hand does (adduct a finger into the
+  one beside it and it carries that finger along). A digit **being crossed
+  into** is therefore released from its usual `HOVER_GIVE` ration and gets the
+  whole nudge grid — a finger with another one inside it is more conspicuous
+  than any nudge that gets it out.
+- **The order the five are placed in.** Least-free-first is right while someone
+  is holding a key down and wrong once nobody is: an index on its way to a key,
+  splayed to its cap, was placed *before* the idle middle finger merely because
+  it was the less free of the two, and the middle finger then had nowhere to go
+  under a digit that was not even sounding a note. The digit left with no room
+  now goes again, ahead of everything not holding a key down, and the retry is
+  kept only if it actually helped.
+
+The last of these only became visible once the search stopped **lying about the
+clearance it had achieved**. Where the joint cage refused every candidate in the
+grid, `_solve_clear` fell back on the wish — and reported the clearance as
+infinite, because it had scored nothing. That is the one pose most likely to be
+in trouble, and it is keyed like any other; it hid a thumb 3 mm inside the index
+finger. The fallback is now measured, caged, like everything else.
+
+Finally, clearance at the moments the fingers are keyed at is not clearance at
+the frames that get **rendered**: two digits apart at both ends of a span can
+still brush in the middle, because the ease between them is not a straight line.
+Every rendered frame is now measured on the baked f-curves (`_baked_chains`
+reads the pose straight back off them), and any frame where two digits have got
+into each other is solved outright and becomes a keyed moment of its own, which
+leaves the ease only the shorter spans either side. Two or three passes settle
+it. Both takes now run with **no interpenetrating frame at all**, the tightest
+moment of each holding 0.03–0.6 mm of surface clearance, and that measurement —
+not the solver's own opinion of itself — is what `animate_hands` returns as
+`finger_clear_mm`. A negative number there means two *pressing* fingers were
+asked for keys the hand cannot hold at once, which is a fingering to look at
+rather than something the animation can fix.
+
+## The other half of it: not needing to dodge in the first place
+
+Getting two fingers out of each other is a rescue, and a rescue is visible. The
+clearance search sees one frame at a time, so when it does have to move a digit
+it moves it *in that frame* — the reach take's left ring finger left 23 mm
+sideways between two frames, which reads as a teleport even though nothing
+intersects. Three things were behind it, and all three are upstream of the
+search.
+
+**The wrist was working to the wrong splay limit.** `_splay_clamp` slides the
+hand until every pressing finger is inside its knuckle's range, and that range —
+26° — is what a finger has when there is *nothing beside it*. Adducting the same
+26° toward a neighbour is not a pose a hand has: knuckles are 24–26 mm apart and
+two proximal phalanges need ~17 mm between their axes, so swept against a
+neighbour held at its own idle pose, contact comes at 8° (index into middle),
+11–12° (middle/ring) and 11–13° (ring/little). Clamping to the joint's figure,
+the wrist barely moved through the take's bass run: four notes 48 mm apart played
+by a hand that stayed put while each finger in turn splayed to its cap. The clamp
+now takes its window twice — first as what the fingers have beside each other
+(`SPLAY_BESIDE`), then, only if a chord is too wide for that, as the joint's own,
+which is the case the fingers really are fanned apart in and nobody is adducting
+into anybody. The wrist path grows ~3%, peak speed and acceleration are unchanged
+(2.18 m/s, 21.4 m/s²), and the fingertip-to-key miss is unchanged or better (the
+demo take's worst falls from 46 mm to 22 mm).
+
+**The release tail outstayed its welcome.** A finger's tail runs 5 frames past
+the note; adjacent fingers share the space between their knuckles; so a finger
+whose note ends 1.8 frames before its neighbour lands on the key in front of it
+is still lying there when the neighbour arrives, and the search has one frame to
+get it out. It now has a deadline — it must be home before a finger beside it
+lands on a nearby key (`BESIDE_CLEAR_LEAD`, gated on `BESIDE_NEAR` so a neighbour
+playing half a keyboard away costs nothing) — and gives the room up along the
+ease it was already leaving on.
+
+**And the tail eased the wrong way.** Blender's SINE is ease-in, which is right
+for a strike (land at speed, with the key) and backwards for a release: the
+finger stayed on its key for most of the tail and then covered the whole way home
+in the last frame or two. Spans in which a digit is giving a key back are now
+keyed EASE_OUT, and sampled with the matching shape (`_ease_off`), so the curve
+and the poses along it describe one motion: away at once, settling as it arrives.
+
+The same reasoning caught one more, and the worst in either take: a finger whose
+next note is soon in *time* keeps hovering over the key it just played, which is
+only sensible if the hand is still there. The right thumb played B3 and hovered
+over it while the hand leapt two octaves, ending up stretched to a point 111 mm
+behind its own wrist, then snapping forward at 2.62 m/s. Hovering is now also
+conditional on the hand not lifting off after that event.
+
+Peak fingertip speed *relative to the hand*, over the whole reach take, falls
+from 2.62 m/s to 1.40 (and that one is now slower than the wrist carrying it, so
+it is the hand moving, not the finger whipping); on the demo take 1.12 → 0.92.
+No frame of either take has two digits in each other.
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic
