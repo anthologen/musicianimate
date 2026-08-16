@@ -34,6 +34,10 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
     column is ROLLED about its own length (THUMB_ROLL, the pronation half of
     opposition), so folding it carries the tip across the palm the way a real
     thumb's does, rather than hooking it into the keyboard like a finger.
+    It only goes UNDER the palm to cross, though: a thumb-under is a
+    transitory move and a weak place to strike from, so an event that is
+    not one (_mark_thumb_crossings) keeps the thumb turned out on its own
+    side of the hand (THUMB_STANCE_ABDUCT) and the wrist goes to the note.
     No IK constraints are used, so the result is plain baked FK keyframes -
     every one of which lands inside the joint
     cage build_hands.py puts on the bones, _cage_pose being what guarantees
@@ -208,6 +212,46 @@ SPLAY_BESIDE = {(2, 3): math.radians(8.0), (3, 2): math.radians(8.0),
 # (_roll_fit). That is the real joint's bargain too - you cannot hold the thumb
 # opposed and drive it straight down at the same time.
 THUMB_ROLL = math.radians(35.0)
+
+# --- ...and it only goes UNDER the palm to cross ------------------------------
+# The roll above is what a thumb-under is made of, and having it costs the solve
+# something it did not use to be able to do wrong: with the column turned, the
+# thumb reaches a key WELL across the palm without any adduction to speak of -
+# the fold carries the tip there (_roll_bearing) - so the splay clamp, which
+# judges a wrist placement by the joint angles it demands, reads the pose as
+# comfortable and leaves the hand where the smoothing dropped it.
+#
+# It is not comfortable. Passing under the hand is a TRANSITORY move: a real
+# thumb goes there to hand the run over to the fingers crossing above it and
+# comes straight back out, and while it is there it is at its weakest - the
+# column is folded across the palm and the tip meets the key on its outside
+# edge, which is not a position anyone strikes a note from by choice. A thumb
+# with no crossing to do plays from its own side of the hand, where it is
+# strong: turned out across a key or two (THUMB_IDLE_X), column extended, the
+# whole arch of the hand behind it.
+#
+# On the reach take - single notes leaping half the board, so nothing crossing
+# anywhere - the smoothing left the wrist up to 95 mm short of where a thumb
+# note wanted it and the thumb simply reached: 34 mm across its own knuckle at
+# frame 314, 39 mm at 325, 38 at 349, and the left hand 32 mm at 361. A thumb
+# tucked under the palm for a whole held note, four times, with no run in sight.
+#
+# So the across-the-palm window is opened only for an event that is actually
+# crossing (_mark_thumb_crossings), and any other pressing thumb keeps a stance
+# of its own: the tip stays at least this far out from its knuckle line, and the
+# WRIST goes to the note instead. 12 deg is about a third of the way from
+# straight ahead to the idle thumb's own turn-out (26 deg at THUMB_IDLE_X /
+# THUMB_IDLE_Y), which leaves the hand ~55 mm of the sideways glide the clamp
+# exists to preserve while keeping the column out from under the index.
+THUMB_STANCE_ABDUCT = math.radians(12.0)
+
+# How near the crossing finger's key has to be for a thumb note to BE a crossing.
+# A thumb passes under to the next step of a scale or, in an arpeggio, up to
+# about a fourth - five white keys, 110 mm. Past that the two notes are not one
+# hand position being handed over, they are a leap, and a leap is played by
+# taking the hand there. (The reach take's thumb notes sit 168 mm from their
+# neighbours, which is the whole point of it.)
+THUMB_CROSS_SPAN = 0.11
 
 # Black keys sit 12 mm above the white keybed and 55 mm further from the player,
 # so a hand held at the white-key hover height has barely any drop left from
@@ -858,6 +902,69 @@ def _group_events(notes):
     return events
 
 
+def _mark_thumb_crossings(events, mirror):
+    """Flag every event whose thumb is CROSSING - passing under the hand on its
+    way to a key the fingers are handing over to it, or being crossed over by
+    the finger taking the run back. Only those events may put the thumb across
+    the palm (see THUMB_STANCE_ABDUCT).
+
+    What a crossing looks like in a note list: the event next to this one - the
+    one before it going up, the one after it coming back down, and the hand does
+    not move between the two - is played by a FINGER, on a key the thumb's own
+    note lies past. Ascending on a right hand that is finger 3 on E and the thumb
+    on the F above it; descending it is the thumb on F and finger 3 coming over
+    onto the E below. Both read the same way round, because "past" is measured
+    from the thumb toward the fingers' side of the hand, which is the direction
+    the thumb has to travel under the palm to get there. On a left hand the whole
+    test mirrors with the keyboard, as the technique does.
+
+    Near in time (one phrase - a crossing is the join between two notes, not two
+    passages) and near in space (THUMB_CROSS_SPAN): a thumb note half the
+    keyboard away from its neighbour is a leap, and a leap the hand travels.
+    """
+    for i, ev in enumerate(events):
+        cross = False
+        for n in ev["notes"]:
+            if n["finger"] != 1:
+                continue
+            for j in (i - 1, i + 1):
+                if not 0 <= j < len(events):
+                    continue
+                nbr = events[j]
+                if abs(nbr["t"] - ev["t"]) > SEGMENT_GAP:
+                    continue
+                cross = cross or any(
+                    0.0 < mirror * (n["x"] - m["x"]) <= THUMB_CROSS_SPAN
+                    for m in nbr["notes"] if m["finger"] != 1)
+        ev["thumb_cross"] = cross
+    return events
+
+
+def _bearing_window(finger, mirror, splay, bend, cross):
+    """Where this digit's TIP may bear from its knuckle: (lo, hi) radians in the
+    hand's own frame, positive toward the little finger.
+
+    That is the splay window shifted by whatever the digit's roll already
+    carries the tip off straight ahead (_roll_bearing), because what the wrist
+    has to be placed for is where the tip ENDS UP, not what the knuckle is doing
+    on its own. For a finger (roll 0) the shift is nothing and this is
+    _splay_range unchanged.
+
+    For a thumb it is the whole story: the roll turns a joint that barely
+    adducts into a column that reaches a good 45 deg across the palm, and
+    THUMB_STANCE_ABDUCT is what keeps it from spending that anywhere but a
+    crossing.
+    """
+    lo, hi = splay[0] + bend, splay[1] + bend
+    if finger != 1 or cross:
+        return lo, hi
+    # Out is -yaw on a right hand (the thumb sits at -x) and +yaw on a left.
+    stance = -mirror * THUMB_STANCE_ABDUCT
+    if mirror > 0:
+        return lo, max(lo, min(hi, stance))
+    return min(hi, max(lo, stance)), hi
+
+
 def _event_root_target(event, mirror, yaw):
     """Wrist position placing the event's pressing knuckles over their keys,
     with the hand turned out by `yaw`.
@@ -957,9 +1064,11 @@ def _splay_pass(event, tgt, mirror, yaw, press_white, press_black,
         dv = tgt[2] + kz - _press_z(n["is_black"], press_white, press_black)
         bend = _roll_bearing(_digit_roll(n["finger"], mirror, dx, reach, dv),
                              math.hypot(dx, reach), dv)
-        ylo, yhi = window(n["finger"], mirror)
-        lo = max(lo, dx - math.tan(yhi + bend) * reach)
-        hi = min(hi, dx - math.tan(ylo + bend) * reach)
+        blo, bhi = _bearing_window(n["finger"], mirror,
+                                   window(n["finger"], mirror), bend,
+                                   event.get("thumb_cross", False))
+        lo = max(lo, dx - math.tan(bhi) * reach)
+        hi = min(hi, dx - math.tan(blo) * reach)
     slide = (lo + hi) / 2.0 if lo > hi else max(lo, min(hi, 0.0))
     return ((tgt[0] + slide * math.cos(yaw),
              tgt[1] + slide * math.sin(yaw), tgt[2]), lo <= hi)
@@ -1058,7 +1167,12 @@ def _wrist_fit(events, targets, yaws, mirror, press_white, press_black):
     black keys. A regularizer keeps the hand on its smoothed glide wherever the
     fingers are comfortable, so this only bites where the geometry is tight -
     ordinary single notes and close chords score zero and do not move at all.
+
+    The events are marked for thumb crossings first, because the sideways clamp
+    inside this search is the one place that knows the difference between a
+    thumb passing under the hand and a thumb left behind by it.
     """
+    _mark_thumb_crossings(events, mirror)
     out = []
     for ev, tgt, yaw in zip(events, targets, yaws):
         base = _splay_clamp(ev, tgt, mirror, yaw, press_white, press_black)

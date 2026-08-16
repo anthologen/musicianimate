@@ -594,6 +594,61 @@ from 2.62 m/s to 1.40 (and that one is now slower than the wrist carrying it, so
 it is the hand moving, not the finger whipping); on the demo take 1.12 → 0.92.
 No frame of either take has two digits in each other.
 
+## The thumb goes under the hand to cross, and for nothing else
+
+Giving the thumb's column its axial roll (`THUMB_ROLL`, the pronation half of
+opposition) is what makes a thumb-under look like one: the fold carries the tip
+*across* the palm and down, the pad turns toward the index, and the key is met
+on the side of the tip. It also handed the solve a way to be wrong that it did
+not have before. A rolled column reaches a long way across the palm on almost no
+adduction — the bearing comes out of the fold, not the joint (`_roll_bearing`) —
+so `_splay_clamp`, which judges a wrist placement by the joint angles it demands,
+read a thumb tucked under the hand as perfectly comfortable and left the wrist
+wherever the Gaussian smoothing had dropped it.
+
+It is not comfortable, and more to the point it is not a *position*. Passing
+under the hand is transitory: the thumb goes there to hand the run over to the
+fingers crossing above it and comes straight back out, and while it is there it
+is at its weakest — column folded across the palm, tip on its outside edge, none
+of the arch of the hand behind it. A thumb with nothing to cross plays from its
+own side, turned out a key or two (`THUMB_IDLE_X`) with the column extended,
+which is both where it rests and where it is strong.
+
+On the reach take — single notes leaping half the board, so nothing crossing
+anywhere — the smoothing left the wrist up to 95 mm short of where a thumb note
+wanted it, and the thumb simply reached: **34 mm across its own knuckle at frame
+314, 39 mm at 325, 38 mm at 349**, and the left hand 32 mm at 361, each one held
+for a whole note. Buried under the palm between the index and middle fingers,
+with no run in sight.
+
+So the across-the-palm window is opened only for an event that is actually
+crossing. `_mark_thumb_crossings` asks what a crossing *is* in a note list: the
+event next to this one — the one before it going up, the one after it coming back
+down — is played by a **finger**, near in time (one phrase) and near in space
+(`THUMB_CROSS_SPAN`, 110 mm ≈ a fourth, which covers a scale step and an
+arpeggio's thumb-under and excludes a leap), on a key the thumb's own note lies
+*past* toward the fingers' side of the hand. Ascending on a right hand that is
+finger 3 on E and the thumb on the F above it; descending it is the thumb on F
+and finger 3 coming over onto the E below. Both read the same way round, because
+"past" is the direction the thumb has to travel under the palm to get there, and
+the whole test mirrors with the keyboard for a left hand, as the technique does.
+
+Any other pressing thumb keeps a stance of its own (`THUMB_STANCE_ABDUCT`): the
+tip stays at least 12° out from its knuckle line, and the wrist goes to the note
+instead. The bound is applied to where the tip *bears* rather than to the yaw
+(`_bearing_window`), which is the only way to see the roll's contribution at all;
+12° is about a third of the way from straight ahead to the idle thumb's own
+turn-out, leaving ~55 mm of the sideways glide the clamp exists to preserve.
+
+Measured: the reach take's worst thumb excursion under the palm falls from
+**39 mm to 3 mm** (nothing over 5 mm on any frame of either hand, against 41
+frames before), with fingertip-to-key contact unchanged (0.58 / 0.64 mm worst),
+finger clearance unchanged (0.16 / 0.02 mm), no keyframe outside the joint cage,
+and wrist peak speed and acceleration unchanged at 2.17 m/s and 19 m/s². The demo
+take, whose scale runs are all genuine crossings, is **bit-identical** — its
+thumb still tucks under at frames 45, 292–295 and 316–319, which is what those
+frames are.
+
 ## Out of scope (future work)
 
 - **Learned cost weights** from the PIG data (would need its academic
