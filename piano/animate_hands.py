@@ -11,7 +11,11 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
     Moving between two positions it LIFTS: the wrist and every fingertip
     not holding a key down rise together over a smooth arc (_travel_lift),
     so the hand clears the keyboard on its way instead of sliding over it,
-    and a key the hand walks out on is released rather than dragged.
+    and a key the hand walks out on is released rather than dragged. The
+    move itself is sampled frame by frame along a minimum-jerk profile
+    (_min_jerk) and given enough time to stay inside human speed and
+    acceleration (LEAP_SPEED_MAX) - taken off the note it is leaving if
+    the music does not otherwise allow it.
     It also carries a YAW (_event_yaw), turning the hand out toward the arm
     that reaches it, so a hand playing far from its own shoulder does not
     leave the whole diagonal in the wrist. Everything below the wrist is
@@ -320,6 +324,40 @@ TRAVEL_LIFT_RATE = 0.5    # m/s ceiling on the rise, so a one-frame hop between
 # the sustain of a pedalled leap, so does the note). Only leaps that get a lift
 # release early: a hand shuffling between neighbouring positions holds its notes
 # out in full, as before.
+
+# --- how a hand accelerates ---------------------------------------------------
+# A leap from one position to another is a ballistic reach, and human reaches
+# follow the MINIMUM-JERK profile (Flash & Hogan 1985): a symmetric bell of
+# speed that starts and ends with zero velocity AND zero acceleration, so the
+# arm never jerks into or out of a move. The travel is sampled along that
+# profile. What it replaces - a single eased span between two keys - is a cubic,
+# whose acceleration STEPS from nothing to its peak at the instant of departure
+# and off a cliff at the arrival: infinite jerk at both ends of every move.
+#
+# For a move of D metres in T seconds the profile's peaks are
+#     v = 1.875 D / T        a = 5.7735 D / T^2
+# so a ceiling on speed and acceleration is really a floor on TIME: a big leap
+# needs time, and where the music does not leave enough, the hand takes it from
+# the note it is leaving (which is what a pianist does - a leap is played short)
+# rather than moving inhumanly fast. Measured on the reach take before this, the
+# 160-180 mm leaps crammed into MIN_TRAVEL were pulling 37-43 m/s^2.
+#
+# The ceilings are the fast end of a real reach rather than a comfortable one:
+# 2.4 m/s and ~2.4 g put a half-metre leap at 0.39 s, which is about what an
+# A0 -> C8 jump takes a player who can make it at all.
+LEAP_SPEED_MAX = 2.4      # m/s at the peak of the bell
+LEAP_ACCEL_MAX = 24.0     # m/s^2 at its shoulders
+LEAP_MIN_HOLD = 0.08      # s of the key a leap may not take back: a note still
+                          # has to be heard being played before the hand goes
+LEAP_TIME_MARGIN = 1.10   # the profile is what the RENDERED frames sit on; the
+                          # Bezier drawn through them bulges a little past it,
+                          # and the lift adds a vertical share of its own, so
+                          # the time solve buys a margin and the ceilings hold
+                          # against the baked curve rather than the ideal one
+TRAVEL_SAMPLE_MIN = 0.003    # m of travel worth sampling a profile through
+TRAVEL_SAMPLE_MAX = 48       # keys, so a long slow drift stays cheap
+TRAVEL_SAMPLE_DENSE = 8      # frames: a travel shorter than this is sampled at
+                             # half frames (see below)
 
 
 def _target_y(note, has_black=False):
@@ -693,12 +731,16 @@ def _ease_wrist(u):
 
     SINE is one-sided: the hand would leave a position at zero speed and still
     be accelerating when it got to the next one, then stop dead - the arrival
-    snap the bass hand had (bass_guitar/animate_hands). The wrist path is a
-    travel curve, not an attack, so it eases at BOTH ends; auto-clamped handles
-    go flat wherever a key repeats its neighbour's value (every dwell, and the
-    top of a travel arc), which makes each span a cubic between two horizontal
-    tangents - exactly smoothstep. The finger bones keep SINE: a press has to
-    arrive at speed, and it must stay in step with the key dips.
+    snap the bass hand had (bass_guitar/animate_hands). A travel curve is not an
+    attack, so it eases at BOTH ends; auto-clamped handles go flat wherever a
+    key repeats its neighbour's value (every dwell, and the top of a travel
+    arc), which makes such a span a cubic between two horizontal tangents -
+    exactly smoothstep. The finger bones keep SINE: a press has to arrive at
+    speed, and it must stay in step with the key dips.
+
+    The SHAPE of a travel no longer comes from this, though - it is sampled
+    frame by frame along the minimum-jerk profile (see LEAP_SPEED_MAX), and this
+    only fills the gaps between those samples, which are a frame apart or less.
     """
     u = max(0.0, min(1.0, u))
     return u * u * (3.0 - 2.0 * u)
@@ -717,13 +759,42 @@ def _sample(keys, frame, ease=_ease):
     return keys[-1][1]
 
 
-def _travel_lift(a, b, dt):
-    """How high the hand arcs crossing from wrist target `a` to `b` in `dt` s."""
-    dist = math.hypot(b[0] - a[0], b[1] - a[1])
+def _travel_dist(a, b):
+    """How far the hand goes between two wrist targets, across the keyboard."""
+    return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def _travel_lift(dist, dt):
+    """How high the hand arcs crossing `dist` metres in `dt` seconds."""
     if dist < TRAVEL_LIFT_MIN or dt <= 0.0:
         return 0.0
     return min(TRAVEL_LIFT_FRAC * dist, TRAVEL_LIFT_MAX,
                TRAVEL_LIFT_RATE * dt / 2.0)
+
+
+def _travel_time(dist):
+    """The least time a move of `dist` metres may take (see LEAP_SPEED_MAX).
+
+    Inverts the minimum-jerk peaks: T >= 1.875 D / v_max from the speed ceiling
+    and T >= sqrt(5.7735 D / a_max) from the acceleration one, whichever is
+    longer. Short moves are governed by the acceleration, long ones by the speed.
+    """
+    return LEAP_TIME_MARGIN * max(1.875 * dist / LEAP_SPEED_MAX,
+                                  math.sqrt(5.7735 * dist / LEAP_ACCEL_MAX))
+
+
+def _min_jerk(u):
+    """Flash & Hogan's minimum-jerk profile: 0 at u=0, 1 at u=1, with zero
+    velocity and zero acceleration at both ends."""
+    u = max(0.0, min(1.0, u))
+    return u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+
+
+def _arc_shape(u):
+    """The travel arc's height, 0 -> 1 -> 0. Cubed rather than squared so the
+    lift-off and the landing are flat in acceleration as well as in speed - the
+    hand leaves the keys the way the rest of the move starts."""
+    return math.sin(math.pi * max(0.0, min(1.0, u))) ** 3
 
 
 def _sample_plan(plan, frame):
@@ -979,6 +1050,21 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         if i + 1 < len(events):
             depart = min(depart, events[i + 1]["t"] - ARRIVE_LEAD - MIN_TRAVEL)
         depart = max(depart, ev["t"])
+        # A leap the remaining window cannot carry at human speed LEAVES EARLIER
+        # - the time has to come from somewhere, and a pianist takes it off the
+        # end of the note rather than out of the move (see LEAP_SPEED_MAX). The
+        # window is max(next_t - ARRIVE_LEAD - d, 0.6 * (next_t - d)) by the
+        # arrival rule above; both shrink as the departure `d` gets later, so
+        # the latest departure that still leaves `need` of travel is the larger
+        # of the two solutions.
+        if i + 1 < len(events):
+            dist = _travel_dist(targets[i], targets[i + 1])
+            if dist >= TRAVEL_LIFT_MIN:
+                need = _travel_time(dist)
+                nt = events[i + 1]["t"]
+                latest = max(nt - ARRIVE_LEAD - need, nt - need / 0.6)
+                depart = min(depart, max(latest, ev["t"] + LEAP_MIN_HOLD,
+                                         arrive))
         # `leave` is when the wrist's last key at this event sits - the moment
         # it starts moving on, which is the departure if it dwelled here at all
         # and its arrival if the passage is too fast for a dwell.
@@ -987,19 +1073,14 @@ def animate_hand(arm_obj, notes, fps, frame_start,
         sched.append((arrive, depart, leave))
         prev_t = leave
 
-    # The arc over each gap, as (frame, (height above the glide,)) keys: zero at
-    # both ends and its peak halfway across, so it adds nothing to the placement
-    # the wrist fit chose at either event. Sampled with the same easing as the
-    # wrist itself, which is what makes it a smooth rise and fall rather than a
-    # hop; the z key at the apex is all Blender needs to bake it (x and y keep
-    # their single span, so the travel itself is unchanged).
+    # Each travel is then SAMPLED along the minimum-jerk profile (_min_jerk),
+    # about one key per frame, rather than left to a single eased span - that is
+    # what gives the move a human acceleration at both ends instead of a step
+    # (see LEAP_SPEED_MAX). The arc rides on top of the same samples, so the
+    # lift and the travel are one motion. `arc_keys` keeps the height alone,
+    # because the FINGERS have to ride up by it too.
     arc_keys = [(frame_start, (0.0,))]
     lifts = [0.0] * len(events)
-    # Every travel also gets its halfway point posed (below), lift or no lift.
-    # The fingers are keyed at the wrist's own key times, so they agree with it
-    # exactly there and drift in between - and a digit still holding a key while
-    # the wrist walks off is exactly where that drift shows.
-    travel_mids = []
 
     for i, (ev, target) in enumerate(zip(events, targets)):
         arrive, depart, leave = sched[i]
@@ -1008,17 +1089,37 @@ def animate_hand(arm_obj, notes, fps, frame_start,
             key_root(depart, target)
         if i + 1 >= len(events):
             continue
-        nxt = sched[i + 1][0]
-        top = to_frame(0.5 * (leave + nxt))
-        travel_mids.append(top)
-        lifts[i] = _travel_lift(target, targets[i + 1], nxt - leave)
-        if lifts[i] <= 0.0:
+        nxt, span = sched[i + 1][0], sched[i + 1][0] - leave
+        dist = _travel_dist(target, targets[i + 1])
+        lifts[i] = _travel_lift(dist, span)
+        if span <= 0.0 or (dist < TRAVEL_SAMPLE_MIN and lifts[i] <= 0.0):
             continue
-        mid = tuple((p + q) / 2.0 for p, q in zip(target, targets[i + 1]))
-        arm_obj.location = (mid[0], mid[1], mid[2] + lifts[i])
-        arm_obj.keyframe_insert(data_path="location", index=2, frame=top)
-        arc_keys += [(to_frame(leave), (0.0,)), (top, (lifts[i],)),
-                     (to_frame(nxt), (0.0,))]
+        arc_keys += [(to_frame(leave), (0.0,)), (to_frame(nxt), (0.0,))]
+        # Sampled ON THE RENDERED FRAMES, not at some spacing of its own: what
+        # anyone sees of this move is the sequence of positions at whole frames,
+        # so those are the ones that have to lie on the profile exactly. Between
+        # them the baked curve is a Bezier through the samples, which bulges a
+        # little past the profile it is drawn through - so a SHORT travel, which
+        # has few frames to be described by and the steepest accelerations, is
+        # sampled at half frames as well. A travel too short to contain a whole
+        # frame still gets its midpoint: never a bare two-key jump.
+        f0, f1 = to_frame(leave), to_frame(nxt)
+        per = 1.0 if f1 - f0 >= TRAVEL_SAMPLE_DENSE else 0.5
+        first = math.ceil((f0 + 1e-6) / per) * per
+        inner = [first + k * per
+                 for k in range(int((f1 - 1e-6 - first) / per) + 1)]
+        if not inner:
+            inner = [0.5 * (f0 + f1)]
+        if len(inner) > TRAVEL_SAMPLE_MAX:      # a long drift: thin them out
+            inner = inner[::math.ceil(len(inner) / TRAVEL_SAMPLE_MAX)]
+        for f in inner:
+            u = (f - f0) / (f1 - f0)
+            lift = lifts[i] * _arc_shape(u)
+            s = _min_jerk(u)
+            p = [a + (b - a) * s for a, b in zip(target, targets[i + 1])]
+            p[2] += lift
+            key_root(leave + u * span, tuple(p))
+            arc_keys.append((f, (lift,)))
     arc_keys.sort(key=lambda k: k[0])
 
     # --- fingers -----------------------------------------------------------
@@ -1123,17 +1224,16 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     moments = sorted({frame_start}
                      | {fr for fr, _loc in wrist_keys}
                      | {fr for fr, _lift in arc_keys}
-                     | set(travel_mids)
                      | {e[0] for plan in plans.values() for e in plan})
     for frame in moments:
+        # The wrist samples already carry the arc; what the FINGERS need is its
+        # height on its own, because every fingertip free to go with the hand
+        # (`give`, 0 only while a key is actually held down) rides up by the
+        # same amount. The hand then simply translates - the poses at the top of
+        # the arc are the ones already solved for range of motion and mutual
+        # clearance, just higher up.
         wx, wy, wz, yaw = _sample(wrist_keys, frame, _ease_wrist)
-        # Mid-travel the whole hand rides up its arc: the wrist and every
-        # fingertip that is free to go with it (`give`, 0 only while a key is
-        # actually held down) are raised by the same amount, so the hand simply
-        # translates - the poses at the top of the arc are the ones already
-        # solved for range of motion and mutual clearance, just higher up.
         lift = _sample(arc_keys, frame, _ease_wrist)[0]
-        wz += lift
         # The whole hand is solved in ITS OWN frame (_hand_xy): the wrist at the
         # origin with the fingers along +y, which is the frame the bones are
         # posed in and the one every offset in build_hands.FINGERS is written

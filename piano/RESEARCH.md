@@ -390,21 +390,75 @@ new curve as smoothstep, which is exactly what auto-clamped handles give between
 two keys of equal value — every dwell, and the top of every arc.
 
 Measured over the whole reach take, per hand per frame, how far the deepest
-fingertip is below the key surface under it: worst **−31.4 mm → −12.1 mm**, and
-summed over every frame **12.3 m → 4.4 m** (−64%; the demo, which barely
-travels, still improves −62%). Mid-leap every fingertip now sits 25–40 mm clear
-of the keys. The wrist arrives at 3 mm/frame instead of 91. Onset contact is
-unchanged to the hundredth of a millimetre (1.55 mm mean on the reach take,
-1.87 on the demo — the same wide-chord compromises as before), the strict
-wrist-ROM check still passes (26.6° / 47.9° of 60), and total finger-to-finger
-overlap is a third better on the reach take and unchanged on the demo. The cost
-is deliberate and small: the reach take's fingers hold their keys 87% of the
-notated length rather than 91%, which is what releasing a leap early means.
+fingertip is below the key surface under it: worst **−31.4 mm → −7.5 mm** (which
+is press depth: nothing is below the keys any more but the fingers pressing
+them), and summed over every frame **12.3 m → 4.4 m** (−64%; the demo, which
+barely travels, still improves −62%). Mid-leap every fingertip now sits 25–40 mm
+clear of the keys. Onset contact is unchanged to the hundredth of a millimetre
+(1.55 mm mean on the reach take, 1.87 on the demo — the same wide-chord
+compromises as before), the strict wrist-ROM check still passes (26.6° / 47.9°
+of 60), and total finger-to-finger overlap is a third better on the reach take
+and unchanged on the demo. The cost is deliberate: the reach take's fingers hold
+their keys 86% of the notated length rather than 91%, which is what releasing a
+leap early means.
 
 What is left is not travel at all: an idle fingertip hovers at a fixed height
 above the *white* keys, so wherever it happens to sit over a black one it is
 4.5 mm inside it — which is most of the 4.4 m that remains, and a static
 property of the hover pose rather than anything the hand does on its way.
+
+### How fast the hand may get there
+
+Clearing the keys is half of a leap; the other half is *how* the hand covers
+the distance, and a smooth-looking curve is not the same as a humanly
+accelerated one. Two problems remained.
+
+**The profile was a cubic, so every move began and ended with an acceleration
+step.** A Bezier between two keys is smoothstep: velocity eases from zero at
+both ends (good), but acceleration jumps from nothing to its peak at the instant
+of departure and falls off a cliff at the arrival — infinite jerk twice per
+move. Human point-to-point reaches instead follow the **minimum-jerk profile**
+([Flash & Hogan 1985](https://www.jneurosci.org/content/5/7/1688)), a symmetric
+bell of speed with zero velocity *and* zero acceleration at both ends. Each
+travel is now sampled along that profile (`_min_jerk`), and the arc rides on the
+same samples with a shape (`_arc_shape`, sin³) that is likewise flat in
+acceleration where it meets the keys. The samples are placed **on the rendered
+frames**, because what anyone sees of a move is the sequence of whole-frame
+positions; a travel under 8 frames — few frames to be described by, and the
+steepest accelerations — is sampled at half frames as well, so the Bezier drawn
+through them cannot bulge far past the profile.
+
+**A leap given too little time is not a smooth leap, it is a fast one.** For a
+move of D metres in T seconds the minimum-jerk peaks are `v = 1.875 D/T` and
+`a = 5.7735 D/T²`, so ceilings on speed and acceleration are really a floor on
+**time**. The reach take's 160–180 mm leaps were being crammed into `MIN_TRAVEL`
+(0.15 s), which asks for 37–43 m/s² — around 4 g at the wrist. Where the window
+is too short, the hand now takes the time off the note it is leaving
+(`_travel_time` → an earlier departure, floored by `LEAP_MIN_HOLD`), which is
+exactly what a pianist does: a leap is played short. `LEAP_SPEED_MAX` = 2.4 m/s
+and `LEAP_ACCEL_MAX` = 24 m/s² are the fast end of a real reach rather than a
+comfortable one — they put a half-metre leap at 0.39 s, about what an A0→C8 jump
+takes a player who can make it at all — and `LEAP_TIME_MARGIN` keeps them true
+of the *baked* curve rather than the ideal one, since the interpolation between
+samples and the vertical share of the arc both add a little.
+
+Measured on the reach take's wrist curves, peak over the whole take, sampled
+both at whole frames (what is seen) and at quarter frames (the underlying
+curve):
+
+| | before | after |
+|---|---|---|
+| peak speed | 2.11 m/s | 2.18 m/s |
+| peak acceleration (whole frames) | 22.0 m/s² | 18.5 m/s² |
+| peak acceleration (quarter frames) | 37.3 m/s² | 21.2 m/s² |
+| peak jerk (quarter frames) | 2972 m/s³ | 1474 m/s³ |
+| quarter-frame samples over the ceilings | 34 | **0** |
+
+The 530 mm leap's frame-to-frame speed now reads 2, 16, 39, 63, 81, 90, 87, 74,
+53, 29, 8, 0 mm/frame — a symmetric bell, against the old 6, 21, 36, 50, 62, 73,
+81, 87, 91, 37, 0, which was still accelerating when it arrived. Fingertip
+clearance improves with it (the worst is now press depth), and the extra time
+costs one more point of note length: 86% held rather than 87%.
 
 ## Out of scope (future work)
 
