@@ -92,7 +92,7 @@ WRIST_R_TARGET = (-0.0475, -0.0941, 1.4728)
 # -x, away from the centreline) and a little forward/down so the elbow reads
 # as bent out to the side -- the natural way to hold a mic up to the mouth --
 # instead of tucked in front of the torso.
-ELBOW_R_POLE = (-0.65, -0.15, 1.05)
+ELBOW_R_POLE = (-0.65, -0.15, 0.85)
 
 STAND_LOCATION = (0.0, -0.65, 0.0)
 
