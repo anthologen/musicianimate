@@ -103,11 +103,14 @@ def build_mic(name="Mic"):
     _link(coll, grip)
 
     # Handle: centred on its own length; butt end sits below the grip origin
-    # by MIC_GRIP_FRAC, tip end above it.
+    # by MIC_GRIP_FRAC, tip end above it. create_cone's axis is already
+    # local Z (verified: no rotation needed -- a stray 90 deg X rotation
+    # here used to swing the cylinder onto -Y instead, leaving it pointing
+    # sideways while the windscreen sat correctly on +Z, which is why the
+    # two read as disconnected).
     handle = bpy.data.objects.new("MicHandle",
                                   _cyl_mesh("MicHandleMesh", MIC_HANDLE_RADIUS,
                                            MIC_HANDLE_LEN))
-    handle.rotation_euler = (math.pi / 2.0, 0.0, 0.0)   # cylinder axis -> local Z
     handle.location = (0.0, 0.0, MIC_HANDLE_LEN * (0.5 - MIC_GRIP_FRAC))
     handle.data.materials.append(body_mat)
     handle.parent = grip
