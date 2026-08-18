@@ -4,10 +4,12 @@ Run inside Blender (Scripting tab, the Python console, or
 ``blender --background --python singer/build_mouth.py``) to rebuild the rig
 from scratch.  Produces a "Mouth" collection holding:
 
-    Mouth       the animated mouth itself - one flat mesh with four material
-                groups (lips, teeth, tongue, dark cavity) and ONE SHAPE KEY
-                PER VISEME PER LOUDNESS, 15 x 3 = 45 in all, named
-                V_<viseme>_<level> (V_AA_loud, V_MBP_soft, ...)
+    Mouth       the animated mouth itself - one flat mesh with three material
+                groups (dark cavity, teeth, tongue) and ONE SHAPE KEY PER
+                VISEME PER LOUDNESS, 15 x 3 = 45 in all, named
+                V_<viseme>_<level> (V_AA_loud, V_MBP_soft, ...).  There are no
+                lips - the mouth is a flat opening cut straight into the
+                face, matching a flat graphic-novel style.
     FaceCard    an optional plain backdrop so the mouth reads as a face
 
 This is deliberately a 2D prototype: the mouth is a flat card in the X-Z
@@ -39,16 +41,17 @@ MOUTH_NAME = "Mouth"
 FACE_NAME = "FaceCard"
 MOUTH_SCALE = 1.0          # world size of a neutral mouth width
 
-# Flat, graphic palette - this is a vector-art mouth, not a skin shader.
-LIP_COLOR = (0.62, 0.15, 0.20)
+# Flat, graphic palette - this is a vector-art mouth, not a skin shader.  No
+# lip colour: the mouth is just an opening in the face, outlined only by
+# where the dark cavity meets the surrounding skin.
 CAVITY_COLOR = (0.045, 0.012, 0.020)
 TEETH_COLOR = (0.94, 0.94, 0.90)
 TONGUE_COLOR = (0.80, 0.33, 0.38)
 FACE_COLOR = (0.93, 0.78, 0.68)
 
 EMISSION = 1.0             # the palette is emitted verbatim (see _material)
-MATERIAL_ORDER = ("lips", "interior", "teeth", "tongue")
-MATERIAL_COLOR = {"lips": LIP_COLOR, "interior": CAVITY_COLOR,
+MATERIAL_ORDER = ("interior", "teeth", "tongue")
+MATERIAL_COLOR = {"interior": CAVITY_COLOR,
                   "teeth": TEETH_COLOR, "tongue": TONGUE_COLOR}
 
 FACE_RX, FACE_RZ = 1.30, 1.70      # backdrop ellipse radii, mouth widths

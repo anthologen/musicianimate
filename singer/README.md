@@ -86,8 +86,9 @@ the summed shape-key weights from 1.0 across the take. It should be 0 — see
 
 A camera cannot tell /p/ from /b/ from /m/, so the 40-odd English phonemes
 collapse to 15 **visemes**. Each viseme is a set of parameters (aperture,
-width, rounding, upper-lip lift, visible teeth, tongue height, lower-lip
-tuck) that `mouth_shapes.outline()` turns into a mouth outline.
+width, rounding, upper lift, visible teeth, tongue height, lower-edge
+tuck) that `mouth_shapes.outline()` turns into a mouth outline. There are no
+lips: the mouth is a flat opening cut straight into the face.
 
 Each viseme has three loudness variants — soft / medium / loud — chosen from
 the note's MIDI velocity. Loudness multiplies the aperture rather than adding
