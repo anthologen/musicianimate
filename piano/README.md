@@ -156,10 +156,13 @@ The realism lives here rather than in the mesh. Briefly, in the order it matters
   enough time to stay inside human speed and acceleration limits.
 - **The wrist yaws and strokes.** It turns out toward the arm reaching it, so a
   hand playing far from its own shoulder does not leave the whole diagonal in
-  the wrist; and it flexes down into each note and rebounds off it, as deep as
-  the note is loud and the chord is wide, where the passage leaves room.
-  Everything below the wrist is solved in the hand's own frame, so the
-  fingertips hold their keys through the stroke.
+  the wrist; and it flexes down into each note, holds there while the note
+  sounds and extends slightly as the finger lets the key up, as deep as the note
+  is loud and the chord is wide, where the passage leaves room. Everything below
+  the wrist is solved in the hand's own frame, so the fingertips hold their keys
+  through the stroke. (The extension is timed off the note *ending*, not off the
+  strike — a bouncier, groovier wrist that rebounds off each hit is two constants
+  away; see the style note at `PITCH_RELEASE_FRAC`.)
 - **The thumb is not a finger.** Its column is rolled about its own length
   (the pronation half of opposition) so folding it carries the tip across the
   palm; it only goes *under* the palm on a real crossing, and otherwise stays

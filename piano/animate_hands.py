@@ -19,10 +19,11 @@ and fingertip target) and keyframes the armatures built by build_hands.py:
     It also carries a YAW (_event_yaw), turning the hand out toward the arm
     that reaches it, so a hand playing far from its own shoulder does not
     leave the whole diagonal in the wrist, and a PITCH (_pitch_keys): the
-    wrist stroke, flexing the hand down into each note and letting it
-    rebound off, as deep as the note is loud and the chord is wide and only
-    where the passage leaves room for the gesture. Everything below the
-    wrist is then solved in the hand's own frame (_hand_frame), so the
+    wrist stroke, flexing the hand down into each note, holding it there
+    while the note sounds and extending slightly as the finger comes off,
+    as deep as the note is loud and the chord is wide and only where the
+    passage leaves room for the gesture. Everything below the wrist is
+    then solved in the hand's own frame (_hand_frame), so the
     fingertips hold their keys through the whole stroke and what gives is
     the fingers.
     How much of the reaching the wrist takes is set by what the fingers
@@ -374,17 +375,35 @@ PITCH_VEL_LOUD = 0.95   # ...and at which it is as loud as this counts
 PITCH_CHORD_FULL = 4    # notes at once that read as the whole hand
 PITCH_CHORD_W = 0.45    # what such a chord is worth next to the dynamic
 
-# The shape of one gesture: the hand cocks UP a little first (a drop has to fall
-# from somewhere), bottoms out just AFTER the key lands - the wrist absorbing
-# the arrival rather than leading it - rebounds past level, and settles. The
-# prep and the rebound are fractions of the drop, so a quiet note has almost
-# neither and a chord has a visible follow-through.
-PITCH_PREP_FRAC = 0.35
-PITCH_REBOUND_FRAC = 0.5
-PITCH_PREP_LEAD = 0.13    # s the cock-up sits ahead of the strike (inside
+# The shape of one gesture: the hand comes DOWN into the note - bottoming out
+# just after the key lands, the wrist absorbing the arrival rather than leading
+# it - stays there for as long as the note is held, and then extends slightly as
+# the finger comes off it and settles back to level. The flexion is the stroke;
+# the extension belongs to the RELEASE and is small, because it is only the hand
+# leaving the key rather than a gesture of its own.
+#
+# STYLE NOTE - the bouncy wrist. Two constants and one key time away, and this
+# is where it lives. The earlier take cocked the hand UP before every strike
+# (PITCH_PREP_FRAC = 0.35) and threw it back PAST level by half the drop a fixed
+# 0.13 s after the bottom (PITCH_RELEASE_FRAC = 0.5, timed off `bottom` rather
+# than off the note ending) - the wrist visibly reacting to each hit, whatever
+# the note was doing. It grooves, and that is exactly why it is off by default:
+# it reads as a player nodding along to the music rather than one playing it.
+# To bring it back, set PITCH_PREP_FRAC = 0.35 and PITCH_RELEASE_FRAC = 0.5 and
+# time the extension off `bottom` in _pitch_keys (there is one marked line).
+PITCH_PREP_FRAC = 0.0     # the cock-up ahead of the strike. At 0 the hand
+#                           starts level and simply flexes into the note; the
+#                           key at PITCH_PREP_LEAD is then just the level the
+#                           drop falls from
+PITCH_RELEASE_FRAC = 0.2  # how far past level the hand comes back up as it
+#                           leaves the key. Slight: a fifth of the drop, so
+#                           half a degree off a quiet note and ~2 deg off a
+#                           fortissimo chord
+PITCH_PREP_LEAD = 0.13    # s the descent begins ahead of the strike (inside
 #                           ARRIVE_LEAD: the hand is already in position)
 PITCH_SINK = 0.05         # s after the strike that the flexion bottoms out
-PITCH_REBOUND_LAG = 0.13  # s from the bottom to the top of the rebound
+PITCH_RELEASE_LAG = 0.10  # s from the note ENDING to the top of the extension:
+#                           the hand rises with the key it is letting up
 PITCH_SETTLE = 0.20       # s from there back to level
 
 # ...and none of it happens in a fast passage. A gesture belongs to a note the
@@ -849,11 +868,17 @@ def _pitch_keys(events, flexes, to_frame, frame_start, fps):
     """The wrist's pitch over the whole take, as (frame, (pitch,)) keys - the
     same shape as the travel arc, and sampled the same way.
 
-    Each event contributes the four corners of one gesture (prep, bottom,
-    rebound, level again). Only the BOTTOM is guaranteed: everything around it
-    is dropped where the music has not left room for it, so a passage too fast
-    for the full shape loses the follow-through first and the prep next, and
-    what is left is a shallow dip on the beat rather than a wrist stuck down.
+    Each event contributes the corners of one gesture: level, bottom, held there
+    while the note sounds, a slight extension as it is let up, level again. Only
+    the BOTTOM is guaranteed - everything after it is dropped where the music has
+    not left room for it, since the next event's own descent owns any moment it
+    gets to first. So a passage too fast for the full shape loses the release
+    lift and simply rises back to level in time for the next note, which is a
+    hand playing quietly rather than a wrist stuck down or fluttering.
+
+    The extension is timed off the note ENDING rather than off the bottom, which
+    is the difference between a hand leaving a key and a hand bouncing off one
+    (see the style note by PITCH_RELEASE_FRAC).
     """
     keys = [(frame_start, (0.0,))]
     step = PITCH_MIN_GAP * fps
@@ -867,7 +892,7 @@ def _pitch_keys(events, flexes, to_frame, frame_start, fps):
 
     for i, ev in enumerate(events):
         flex = flexes[i]
-        # The next event's own prep is the deadline for this one's tail:
+        # The next event's own descent is the deadline for this one's tail:
         # whichever gesture gets to a moment first owns it.
         nxt = (events[i + 1]["t"] - PITCH_PREP_LEAD if i + 1 < len(events)
                else float("inf"))
@@ -877,11 +902,20 @@ def _pitch_keys(events, flexes, to_frame, frame_start, fps):
             # Two strikes on top of each other. The deeper flexion stands rather
             # than a key that will not fit quietly losing the drop it was for.
             keys[-1] = (keys[-1][0], (min(keys[-1][1][0], -flex),))
-        rebound = bottom + PITCH_REBOUND_LAG
-        for t, pitch in ((rebound, PITCH_REBOUND_FRAC * flex),
-                         (rebound + PITCH_SETTLE, 0.0)):
-            if t >= nxt or not add(t, pitch):
+        # The event is over when its LAST voice is - that is when the hand comes
+        # off the keys, and a chord whose notes end raggedly leaves once.
+        release = max(n["end"] for n in ev["notes"])
+        lift = max(release, bottom) + PITCH_RELEASE_LAG   # off `bottom` for the
+        #                                                   bouncy style
+        tail = [(release, -flex)] if release > bottom else []
+        tail += [(lift, PITCH_RELEASE_FRAC * flex), (lift + PITCH_SETTLE, 0.0)]
+        for t, pitch in tail:
+            if t >= nxt:
                 break
+            # A corner too close to the last one to key is simply skipped: the
+            # ones after it are still wanted (a staccato note has no hold, but
+            # it does have a hand coming off it).
+            add(t, pitch)
     return keys
 
 
@@ -1388,10 +1422,10 @@ def _event_pose_cost(event, tgt, mirror, yaw, press_white, press_black,
     its key reads worse than a few degrees of knuckle. Both the press and the
     hover pose are scored, since the hand holds one wrist position for both -
     and each in the tilt the wrist stroke has the hand at when it happens
-    (`pitch`, flexed at the bottom and cocked up over the hover). One placement
-    has to serve the whole of that swing, so scoring it at the two extremes is
-    what keeps a chord the hand drops into from being fitted flat and then
-    played tilted.
+    (`pitch`, flexed at the bottom and extended over the hover the finger leaves
+    the key through). One placement has to serve the whole of that swing, so
+    scoring it at the two extremes is what keeps a chord the hand drops into
+    from being fitted flat and then played tilted.
     """
     has_black = any(n["is_black"] for n in event["notes"])
     cost = 0.0
@@ -1477,7 +1511,8 @@ def _wrist_fit(events, targets, yaws, flexes, mirror, press_white,
     for ev, tgt, yaw, flex in zip(events, targets, yaws, flexes):
         level = None
         for step in PITCH_FIT_STEPS:
-            stroke = (-flex * step, PITCH_PREP_FRAC * flex * step)
+            stroke = (-flex * step,
+                      max(PITCH_PREP_FRAC, PITCH_RELEASE_FRAC) * flex * step)
             cost, cand = _fit_event(ev, tgt, mirror, yaw, stroke,
                                     press_white, press_black)
             if cost <= REACH_W * PITCH_FIT_SLACK ** 2:
@@ -2002,7 +2037,7 @@ def animate_hand(arm_obj, notes, fps, frame_start,
     targets = [t + (y,) for t, y in zip(fitted, yaws)]
 
     # The pitch is a curve of its own, on its own key times: the wrist stroke
-    # runs on the MUSIC's clock (cock up, strike, rebound, settle), while the
+    # runs on the MUSIC's clock (strike, hold, release, settle), while the
     # position and the yaw run on the hand's travel schedule, and neither has
     # any business keying the other's channel. So the object's rotation is keyed
     # one axis at a time - Z where the hand arrives and travels, X where the
