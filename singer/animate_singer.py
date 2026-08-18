@@ -78,12 +78,19 @@ MOUTH_SCALE = 0.055
 MOUTH_MOUNT = (0.0, -0.113, 1.56)
 
 # ---------------------------------------------------------------------------
-# Right wrist: lifted to hold the mic up to the mouth. Chosen so the
-# wrist-to-mouth distance matches MicHand's own reach from its wrist bone to
-# the mic's tip (see _mount_mic_hand), so the fist lands right at the
-# singer's lips.
+# Right wrist / mic shaft: rather than aiming the mic from wherever the
+# wrist happens to be, the mic's own shaft direction is fixed FIRST -- along
+# the line from the empty stand's clip height up to the mouth, so the
+# windscreen reads as pointed at the mouth and the BUTT of the mic reads as
+# pointed back down at the stand it presumably came from -- and the wrist
+# position is then derived from that direction (mouth, minus one mic's
+# reach along it). STAND_CLIP_Z mirrors build_mic.STAND_CLIP_HEIGHT (the
+# height an actually-clipped mic would sit at); kept as a separate literal
+# so this module doesn't need to import build_mic just for one constant.
 # ---------------------------------------------------------------------------
-WRIST_R_TARGET = (-0.0475, -0.0941, 1.4728)
+STAND_LOCATION = (0.0, -0.65, 0.0)
+STAND_CLIP_Z = 1.40
+MIC_TIP_GAP = 0.015    # clearance between the windscreen and the lips
 
 # build_singer's default elbow pole (tuned for the resting, hands-at-sides
 # pose) points behind the body; with the wrist raised this far across toward
@@ -93,8 +100,6 @@ WRIST_R_TARGET = (-0.0475, -0.0941, 1.4728)
 # as bent out to the side -- the natural way to hold a mic up to the mouth --
 # instead of tucked in front of the torso.
 ELBOW_R_POLE = (-0.65, -0.15, 0.85)
-
-STAND_LOCATION = (0.0, -0.65, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -141,23 +146,30 @@ def _mount_mouth(arm):
 
 
 def _mount_mic_hand(arm):
-    """Stamp MicHand's world pose -- wrist bone at WRIST_R_TARGET, shaft
-    (local +x) pointing at the mouth -- then wire the singer's right arm to
-    it exactly the way animate_guitarist.py wires the guitarist's arms to
-    FretHand/PickHand: the Wrist_R IK target COPY_LOCATIONs onto MicHand's
-    own wrist bone, and the blocky Hand_R stub (which the hand rig replaces)
-    is hidden."""
+    """Stamp MicHand's world pose -- shaft (local +x) along the fixed
+    stand-clip-to-mouth line, wrist bone (== the mic's own grip point, see
+    build_hand._BONE_TAIL) one mic's reach back down that line from the
+    mouth -- then wire the singer's right arm to it exactly the way
+    animate_guitarist.py wires the guitarist's arms to FretHand/PickHand:
+    the Wrist_R IK target COPY_LOCATIONs onto MicHand's own wrist bone, and
+    the blocky Hand_R stub (which the hand rig replaces) is hidden."""
     mic_hand = bpy.data.objects["MicHand"]
-    wrist_pos = V(WRIST_R_TARGET)
     mouth_world = V(MOUTH_MOUNT)
-    direction = (mouth_world - wrist_pos).normalized()
+    stand_aim = V((STAND_LOCATION[0], STAND_LOCATION[1], STAND_CLIP_Z))
+    direction = (mouth_world - stand_aim).normalized()
+
+    tip_local_z = bpy.data.objects["Mic"]["tip_local_z"]
+    wrist_pos = mouth_world - direction * (tip_local_z + MIC_TIP_GAP)
+
     rot = direction.to_track_quat('X', 'Z').to_matrix().to_4x4()
-    # MicHand's wrist bone tail sits at armature-local (0, 0.030, 0) (see
-    # build_hand._build_wrist); translate that to the origin before rotating
-    # into place so the BONE (not the armature object's own origin) lands at
-    # wrist_pos.
-    mic_hand.matrix_world = (M.Translation(wrist_pos) @ rot
-                             @ M.Translation(V((0.0, -0.030, 0.0))))
+    # MicHand's wrist bone TAIL is the grip point (build_hand._BONE_TAIL is
+    # the zero offset the fingers/palm/mic are all built around) -- but a
+    # bone's own local origin is its HEAD, 0.055 away at (0, -0.025, 0), so
+    # stamping the object's raw origin at wrist_pos would leave the actual
+    # grip that far off. Pre-translate by -tail so the TAIL lands at
+    # wrist_pos instead.
+    tail_local = V((0.0, 0.030, 0.0))
+    mic_hand.matrix_world = M.Translation(wrist_pos) @ rot @ M.Translation(-tail_local)
     bpy.context.view_layer.update()
 
     wrist_target = bpy.data.objects["Wrist_R"]
@@ -166,6 +178,12 @@ def _mount_mic_hand(arm):
     copy_loc = wrist_target.constraints.new('COPY_LOCATION')
     copy_loc.target = mic_hand
     copy_loc.subtarget = "wrist"
+    # COPY_LOCATION on a bone subtarget samples the HEAD by default; the
+    # hand assembly is built around the TAIL (see above), so without this
+    # the singer's actual arm bone lands a bone-length (5.5cm) short of
+    # where the hand visually is -- read as the wrist floating apart from
+    # the forearm.
+    copy_loc.head_tail = 1.0
 
     # Re-aim the elbow pole so the arm bends out to the side rather than
     # swinging across the midline into the chest (see ELBOW_R_POLE).

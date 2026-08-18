@@ -96,11 +96,16 @@ THUMB_TOTAL_FLEX = 100.0
 # Sits flush behind the knuckle line (same KNUCKLE_ANGLE direction, i.e.
 # +z since that angle is 90 deg), spanning the fingers' x-spread.
 PALM_SIZE = (0.070, 0.030, 0.052)
-# Bone-parent space (see _bone_box) is relative to the wrist bone's TAIL;
-# the wrist bone below runs head=(0,-0.025,0) -> tail=(0,0.030,0), so an
-# armature-local point converts to bone-parent space by subtracting the
-# tail's own armature-local position (0, 0.030, 0).
-_BONE_TAIL = V((0.0, 0.030, 0.0))
+# Bone-parent space (see _bone_box) is relative to the wrist bone's TAIL,
+# which is also the point animate_singer.py's mount stamps onto the arm's
+# wrist joint (WRIST_R_TARGET) -- so leaving this at the origin (no offset)
+# is what makes the wrap circle's centre (the grip point every finger, the
+# palm and the mic itself are built around) land EXACTLY on that joint,
+# instead of a few cm off it (which read as the hand floating apart from
+# the forearm). Kept as a named offset, not a bare V((0,0,0)) literal, so a
+# future rebuilt wrist bone with a genuinely offset tail only needs this
+# one constant changed.
+_BONE_TAIL = V((0.0, 0.0, 0.0))
 
 
 def _mat():
