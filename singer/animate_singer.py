@@ -152,24 +152,41 @@ def _mount_mic_hand(arm):
     mouth -- then wire the singer's right arm to it exactly the way
     animate_guitarist.py wires the guitarist's arms to FretHand/PickHand:
     the Wrist_R IK target COPY_LOCATIONs onto MicHand's own wrist bone, and
-    the blocky Hand_R stub (which the hand rig replaces) is hidden."""
+    the blocky Hand_R stub (which the hand rig replaces) is hidden.
+
+    The mic's shaft direction alone only pins ONE axis of the hand's
+    rotation (local +x); the other two were left for to_track_quat to pick
+    (nearest to world +z), with no regard for which way the singer's actual
+    forearm arrives -- so the hand's own "wrist end" (local -y, opposite the
+    fingers, see build_hand._build_wrist) could end up pointing off at an
+    angle unrelated to the forearm, reading as attached to it at the right
+    SPOT but the wrong ANGLE. Fixed with a two-pass solve: mount once with a
+    placeholder rotation so the position-only arm IK settles (elbow depends
+    on the wrist's target POSITION, never its rotation, so this doesn't need
+    to repeat), read the real elbow->wrist direction off the now-posed arm,
+    and re-mount with local -y aimed at the elbow (orthogonalised against
+    the fixed shaft axis) -- same position, corrected rotation."""
     mic_hand = bpy.data.objects["MicHand"]
     mouth_world = V(MOUTH_MOUNT)
     stand_aim = V((STAND_LOCATION[0], STAND_LOCATION[1], STAND_CLIP_Z))
-    direction = (mouth_world - stand_aim).normalized()
+    shaft_dir = (mouth_world - stand_aim).normalized()
 
     tip_local_z = bpy.data.objects["Mic"]["tip_local_z"]
-    wrist_pos = mouth_world - direction * (tip_local_z + MIC_TIP_GAP)
-
-    rot = direction.to_track_quat('X', 'Z').to_matrix().to_4x4()
+    wrist_pos = mouth_world - shaft_dir * (tip_local_z + MIC_TIP_GAP)
     # MicHand's wrist bone TAIL is the grip point (build_hand._BONE_TAIL is
     # the zero offset the fingers/palm/mic are all built around) -- but a
     # bone's own local origin is its HEAD, 0.055 away at (0, -0.025, 0), so
     # stamping the object's raw origin at wrist_pos would leave the actual
     # grip that far off. Pre-translate by -tail so the TAIL lands at
-    # wrist_pos instead.
+    # wrist_pos instead. Changing the ROTATION below never moves this: the
+    # pre-translation cancels the tail offset before the rotation is
+    # applied, so the tail always lands exactly at wrist_pos regardless.
     tail_local = V((0.0, 0.030, 0.0))
-    mic_hand.matrix_world = M.Translation(wrist_pos) @ rot @ M.Translation(-tail_local)
+
+    def _stamp(rot):
+        mic_hand.matrix_world = M.Translation(wrist_pos) @ rot @ M.Translation(-tail_local)
+
+    _stamp(shaft_dir.to_track_quat('X', 'Z').to_matrix().to_4x4())
     bpy.context.view_layer.update()
 
     wrist_target = bpy.data.objects["Wrist_R"]
@@ -188,6 +205,17 @@ def _mount_mic_hand(arm):
     # Re-aim the elbow pole so the arm bends out to the side rather than
     # swinging across the midline into the chest (see ELBOW_R_POLE).
     bpy.data.objects["Elbow_R"].location = ELBOW_R_POLE
+    bpy.context.view_layer.update()
+
+    # Second pass: the arm has now solved against wrist_pos, so read the
+    # real elbow -> wrist direction and re-aim the hand's -y (its wrist end)
+    # to continue it, keeping +x pinned to the mic's shaft direction.
+    elbow_world = (arm.matrix_world @ arm.pose.bones["forearm.R"].matrix).translation
+    forearm_dir = (wrist_pos - elbow_world).normalized()
+    y_axis = (forearm_dir - forearm_dir.dot(shaft_dir) * shaft_dir).normalized()
+    z_axis = shaft_dir.cross(y_axis)
+    _stamp(M((shaft_dir, y_axis, z_axis)).transposed().to_4x4())
+    bpy.context.view_layer.update()
 
     stub = bpy.data.objects.get("Hand_R")
     if stub is not None:
