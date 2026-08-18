@@ -85,6 +85,15 @@ MOUTH_MOUNT = (0.0, -0.113, 1.56)
 # ---------------------------------------------------------------------------
 WRIST_R_TARGET = (-0.0475, -0.0941, 1.4728)
 
+# build_singer's default elbow pole (tuned for the resting, hands-at-sides
+# pose) points behind the body; with the wrist raised this far across toward
+# the mouth it lets the two-bone IK swing the elbow across the midline, deep
+# into the chest box. Re-aimed out to the singer's own right side (further
+# -x, away from the centreline) and a little forward/down so the elbow reads
+# as bent out to the side -- the natural way to hold a mic up to the mouth --
+# instead of tucked in front of the torso.
+ELBOW_R_POLE = (-0.65, -0.15, 1.05)
+
 STAND_LOCATION = (0.0, -0.65, 0.0)
 
 
@@ -157,6 +166,10 @@ def _mount_mic_hand(arm):
     copy_loc = wrist_target.constraints.new('COPY_LOCATION')
     copy_loc.target = mic_hand
     copy_loc.subtarget = "wrist"
+
+    # Re-aim the elbow pole so the arm bends out to the side rather than
+    # swinging across the midline into the chest (see ELBOW_R_POLE).
+    bpy.data.objects["Elbow_R"].location = ELBOW_R_POLE
 
     stub = bpy.data.objects.get("Hand_R")
     if stub is not None:
