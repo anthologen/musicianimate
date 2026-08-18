@@ -704,12 +704,14 @@ the demo take that grades a *pp* single note at 2.5°, *mf* at 4.2°, *f* at 7.6
 a *ff* single note at 11.0°, a three-note *pp* chord at 5.0° and the four-note
 *ff* chord at 11.0°.
 
-The shape of one gesture is prep, bottom, rebound, settle: the hand cocks up a
-little first (a drop has to fall from somewhere), bottoms out 50 ms *after* the
-key lands — the wrist absorbing the arrival rather than leading it — rebounds
-past level by half the drop, and settles. Only the bottom is guaranteed;
-everything around it is dropped where the music has not left room, so a fast
-passage loses the follow-through first and the prep next.
+The shape of one gesture is down, hold, up: the hand flexes into the note,
+bottoming out 50 ms *after* the key lands — the wrist absorbing the arrival
+rather than leading it — stays down for as long as the note sounds, and then
+extends slightly (a fifth of the drop) as the finger lets the key up, 100 ms
+behind the note ending, before settling to level. Only the bottom is guaranteed;
+everything after it is dropped where the music has not left room, because the
+next note's own descent owns any moment it reaches first — so a fast passage
+simply rises back to level in time for the next note and never lifts at all.
 
 Three things then take the stroke away, and each is the same statement: *a
 gesture is what the hand has left over.*
@@ -743,7 +745,42 @@ the key gives under a finger); past it the pose is not offered at all, and a
 digit with nothing else left crosses by a hair instead, where the refinement
 pass can see it.
 
-### Measured
+### The bounce came out
+
+That shape is the second one. The first cocked the hand **up** before every
+strike (35% of the drop, 130 ms ahead of it) and threw it back **past level** by
+half the drop a fixed 130 ms after the bottom, regardless of what the note was
+doing — a wrist *reacting* to each hit. Rendered, it grooves: the hand nods
+along to the music rather than playing it, which is a stylistic choice and not
+the default one. And measured, it turned out to be much more than a flourish —
+the reach take's wrists spent **two thirds of the take above neutral**, cocked up
+between notes rather than resting level, because the prep of the next note began
+before the rebound of the last one had come down.
+
+So the extension is now timed off the note **ending** rather than off the
+bottom — the difference between a hand leaving a key and a hand bouncing off one
+— and it is small, and the prep is gone, so a note begins from a level hand.
+It is two constants away in `animate_hands.py` (`PITCH_PREP_FRAC`,
+`PITCH_RELEASE_FRAC`) plus one key time in `_pitch_keys`, and there is a style
+note at the constants saying exactly which; a bouncy preset is a reasonable thing
+to want for a groove piece, it is just not the neutral read.
+
+| | wrist pitch | frames above neutral | crossings of neutral | finger clearance | wrist bend off forearm |
+|---|---|---|---|---|---|
+| demo L | −10.0° … +1.9° (was −9.9 … +4.7) | 2% (77%) | 3 (18) | 0.98 mm (1.00) | 10.4° (11.7) |
+| demo R | −11.0° … +2.2° (was −10.9 … +5.2) | 5% (56%) | 9 (62) | 0.02 mm (0.03) | 21.5° (23.5) |
+| reach L | −11.0° … +2.1° (was −10.9 … +5.2) | 6% (67%) | 15 (38) | 0.93 mm (0.91) | 27.8° (28.6) |
+| reach R | −11.0° … +2.1° (was −10.9 … +5.2) | 7% (67%) | 17 (38) | 0.09 mm (0.40) | 47.5° (50.7) |
+
+The flexion is untouched — the stroke still lands at the full 11° on a *ff*
+chord, and the same three things still take it away. What went is the wrist
+crossing back over neutral between every pair of notes. Nothing regressed
+underneath: no two digits intersect on any rendered frame of either take (the
+reach take's right hand keeps the least room, as it always has), and both
+wrists sit *further* inside `WRIST_BEND_MAX` than before, since a hand that no
+longer cocks up asks the forearm for less.
+
+### Measured (when the stroke was introduced)
 
 Across both takes, against the same takes with the stroke amplitude set to zero
 (which reproduces the previous animation exactly — the frame transforms, the
@@ -792,3 +829,10 @@ wrist"](https://pianoadventures.com/blog/2016/02/01/level-1-articulation-and-the
   octave passages).
 - Style profiles (editions differ: Czerny vs Chopin fingering habits could
   be alternate `WEIGHTS` presets).
+- **A bouncy wrist as a deliberate style**, rather than as the shape the stroke
+  happened to have first. The groove read — cocking up before the strike and
+  rebounding past level off it — is a legitimate look for a pop or jazz take,
+  and the pieces are all still there (see "The bounce came out"); what it wants
+  is to be a *preset* chosen per take, alongside the other things a style would
+  set (how far ahead of the beat the hand arrives, how much the body moves),
+  rather than a pair of constants edited by hand.
