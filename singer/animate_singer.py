@@ -1,13 +1,13 @@
 """Assembles the full singer shot: a blocky minimalist standing body, the
-mouth mounted on its head and lip-synced from a timeline.json, a handheld
-wireless mic held up to the mouth by the right hand, and an empty mic stand
-in front of the singer.
+mouth mounted on its head and lip-synced from a timeline.json, a fist
+wrapped around a handheld wireless mic held up to the mouth by the right
+hand, and an empty mic stand in front of the singer.
 
 The singer pipeline already produces, independently:
 
-  * build_singer.py   -> a standing "Singer" humanoid, IK arms + legs,
-                          hand.* stubs at each wrist (adapted from
-                          guitar/build_guitarist.py)
+  * build_singer.py   -> a standing "Singer" humanoid (adapted from
+                          guitar/build_guitarist.py), IK arms + legs,
+                          hand.* stubs at each wrist
   * build_mouth.py     -> the flat "Mouth" object with a shape key per
                           viseme per loudness, authored facing -Y at
                           MOUTH_SCALE world size
@@ -15,23 +15,30 @@ The singer pipeline already produces, independently:
   * build_mic.py        -> a "Mic" prop (handle + windscreen) and a
                           "MicStand" prop (tripod + telescoping pole + an
                           intentionally EMPTY clip bracket)
+  * build_hand.py       -> a "MicHand" armature: a fist (adapted from
+                          guitar/build_hands.py's PickHand) with fingers
+                          curled around the mic's handle
 
 This module stitches them into one shot:
 
   1. (Re)build the mouth first (its own build_mouth() is the only builder
-     that clears the whole scene), then the singer body.
+     that clears the whole scene), then the singer body, then the
+     mic-gripping hand and the empty stand.
   2. Mount the mouth onto the singer's head bone: singer/build_singer.py
      stands the figure facing -Y with left = +X, right = -X -- exactly the
      axis convention singer/mouth_shapes.py already draws the mouth in, so
      mounting it is a plain translate + scale, no reorientation.
-  3. Raise the right wrist IK target to a point below-and-forward of the
-     mouth at the mic's own reach (MIC_TIP_LOCAL_Z + a small gap), so the
-     mic -- rigidly bone-parented to hand.R -- lands with its windscreen
-     right at the singer's lips, and the blocky hand stub (which follows
-     the same bone) lands right where the mic is gripped.
+  3. Stamp the MicHand assembly's world pose so its wrist bone lands below
+     the mouth at the mic's own reach and its shaft (local +x) points at
+     the mouth, then -- the SAME pattern guitar/animate_guitarist.py uses
+     to wire the guitarist's arms to FretHand/PickHand -- give the singer's
+     Wrist_R IK target a COPY_LOCATION constraint onto MicHand's own wrist
+     bone, so the arm's two-bone IK reaches out to wherever the hand rig
+     is, and hide the singer's blocky Hand_R stub (the detailed hand rig
+     replaces it).
   4. Build the mic stand as a static prop standing in front of the singer,
-     its clip left empty (the only mic in the shot is the one in the
-     singer's hand).
+     its clip left empty (the only mic in the shot is the one gripped in
+     the singer's hand).
   5. Animate the mouth's shape keys from timeline.json.
   6. Camera + lighting, then save.
 
@@ -72,13 +79,11 @@ MOUTH_MOUNT = (0.0, -0.113, 1.56)
 
 # ---------------------------------------------------------------------------
 # Right wrist: lifted to hold the mic up to the mouth. Chosen so the
-# wrist-to-mouth distance matches the mic's own grip-to-tip reach (see
-# _mount_mic), which is what keeps the blocky hand stub (bone-parented,
-# follows automatically) sitting right where the mic is gripped instead of
-# floating off on its own.
+# wrist-to-mouth distance matches MicHand's own reach from its wrist bone to
+# the mic's tip (see _mount_mic_hand), so the fist lands right at the
+# singer's lips.
 # ---------------------------------------------------------------------------
-WRIST_R_TARGET = (-0.02, -0.133, 1.45)
-MIC_TIP_GAP = 0.015    # clearance between the windscreen and the lips
+WRIST_R_TARGET = (-0.0475, -0.0941, 1.4728)
 
 STAND_LOCATION = (0.0, -0.65, 0.0)
 
@@ -93,7 +98,7 @@ def _ensure_built():
     bm.MOUTH_SCALE = MOUTH_SCALE
     bm.build_mouth(face=False, camera=False, clear=True)
     _load("build_singer").build_singer()
-    _load("build_mic").build_mic()
+    _load("build_hand").build_mic_hand()
     _load("build_mic").build_mic_stand(location=STAND_LOCATION)
 
 
@@ -126,31 +131,38 @@ def _mount_mouth(arm):
     return mouth
 
 
-def _mount_mic(arm):
-    """Lift the right wrist to the mic's reach below the mouth, then
-    bone-parent the mic to hand.R and stamp a world transform whose grip
-    point sits at the wrist and whose shaft points at the mouth."""
-    wrist_target = bpy.data.objects["Wrist_R"]
-    wrist_target.location = WRIST_R_TARGET
-    bpy.context.view_layer.update()
-
-    hb = arm.pose.bones["hand.R"]
-    wrist_world = (arm.matrix_world @ hb.matrix).translation
+def _mount_mic_hand(arm):
+    """Stamp MicHand's world pose -- wrist bone at WRIST_R_TARGET, shaft
+    (local +x) pointing at the mouth -- then wire the singer's right arm to
+    it exactly the way animate_guitarist.py wires the guitarist's arms to
+    FretHand/PickHand: the Wrist_R IK target COPY_LOCATIONs onto MicHand's
+    own wrist bone, and the blocky Hand_R stub (which the hand rig replaces)
+    is hidden."""
+    mic_hand = bpy.data.objects["MicHand"]
+    wrist_pos = V(WRIST_R_TARGET)
     mouth_world = V(MOUTH_MOUNT)
-    direction = (mouth_world - wrist_world).normalized()
-
-    mic = bpy.data.objects["Mic"]
-    tip_local_z = mic["tip_local_z"]
-    grip_pos = mouth_world - direction * (tip_local_z + MIC_TIP_GAP)
-
-    mic.parent = arm
-    mic.parent_type = 'BONE'
-    mic.parent_bone = "hand.R"
+    direction = (mouth_world - wrist_pos).normalized()
+    rot = direction.to_track_quat('X', 'Z').to_matrix().to_4x4()
+    # MicHand's wrist bone tail sits at armature-local (0, 0.030, 0) (see
+    # build_hand._build_wrist); translate that to the origin before rotating
+    # into place so the BONE (not the armature object's own origin) lands at
+    # wrist_pos.
+    mic_hand.matrix_world = (M.Translation(wrist_pos) @ rot
+                             @ M.Translation(V((0.0, -0.030, 0.0))))
     bpy.context.view_layer.update()
-    rot = direction.to_track_quat('Z', 'Y').to_matrix().to_4x4()
-    mic.matrix_world = M.Translation(grip_pos) @ rot
-    bpy.context.view_layer.update()
-    return mic
+
+    wrist_target = bpy.data.objects["Wrist_R"]
+    for con in list(wrist_target.constraints):
+        wrist_target.constraints.remove(con)
+    copy_loc = wrist_target.constraints.new('COPY_LOCATION')
+    copy_loc.target = mic_hand
+    copy_loc.subtarget = "wrist"
+
+    stub = bpy.data.objects.get("Hand_R")
+    if stub is not None:
+        stub.hide_viewport = True
+        stub.hide_render = True
+    return mic_hand
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +225,11 @@ def animate_singer(timeline_json=None, fps=24, frame_start=1, build=True,
     scene = bpy.context.scene
     if build:
         _ensure_built()
-    _require("Singer", "Mouth", "Mic", "MicStand")
+    _require("Singer", "Mouth", "MicHand", "MicStand")
 
     arm = bpy.data.objects["Singer"]
     _mount_mouth(arm)
-    _mount_mic(arm)
+    _mount_mic_hand(arm)
 
     animate_mouth = _load("animate_mouth").animate_mouth
     frame_start, frame_end = animate_mouth(timeline_json, fps=fps,
