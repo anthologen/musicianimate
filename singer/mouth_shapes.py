@@ -29,16 +29,21 @@ are fractions of a neutral mouth width (1.0), so the whole mouth can be scaled
 onto a face of any size later.
 
 Shape parameters (all 0..1 unless noted):
-    open    aperture height, 0 = lips together (0.55 is a full open "ah")
+    open    aperture height, 0 = mouth shut (0.55 is a full open "ah")
     width   corner-to-corner width, 1.0 = neutral, >1 spread, <1 pursed
-    round   lip rounding/protrusion; pulls the corners in and fattens the lips
-    upper   share of the aperture taken above the lip line (upper-lip lift)
+    round   lip rounding/protrusion; pulls the corners in
+    upper   share of the aperture taken above the mouth line (upper lift)
             vs below it (jaw drop); 0.5 is even
     corner  corner height offset (+ smile, - frown), in outline units
     teeth   how far the upper teeth show down into the aperture
-    tongue  tongue height; 0 hides it behind the lower lip, 1 puts the tip
+    tongue  tongue height; 0 hides it behind the lower edge, 1 puts the tip
             up between the teeth (for /th/)
-    tuck    lower lip drawn back under the upper teeth (for /f/ /v/)
+    tuck    lower edge drawn back under the upper teeth (for /f/ /v/)
+
+There are no separate lips: the mouth is a flat-shaded opening cut directly
+into the face, outlined by nothing but the boundary between the aperture
+(dark cavity, teeth, tongue) and the surrounding skin - matching a flat
+graphic-novel style rather than a modelled mouth with lip volume.
 """
 
 import math
@@ -46,16 +51,10 @@ import math
 # ---------------------------------------------------------------------------
 # Outline geometry constants (fractions of a neutral mouth width of 1.0)
 # ---------------------------------------------------------------------------
-EDGE_SAMPLES = 17          # points along one lip edge, corner to corner
+EDGE_SAMPLES = 17          # points along one aperture edge, corner to corner
 MIN_OPEN = 0.012           # a "closed" mouth is still a visible dark slit
-LIP_T_UPPER = 0.055        # upper lip band thickness
-LIP_T_LOWER = 0.072        # the lower lip is fuller than the upper
-CORNER_OUT = 0.020         # how far the lip band extends past the corners
 ARCH_IN = 0.60             # aperture edge fullness (lower = flatter/wider)
-ARCH_OUT = 0.35            # outer lip edge fullness
-CUPID_BOW = 0.28           # dip in the middle of the upper lip
 ROUND_NARROW = 0.32        # how much full rounding narrows the mouth
-ROUND_FATTEN = 0.55        # how much full rounding thickens the lips
 
 TEETH_HALF_W = 0.78        # upper teeth width, as a fraction of the aperture
 TEETH_SEGMENTS = 11        # the teeth row is an arc, not a flat bar
@@ -64,12 +63,10 @@ TONGUE_SEGMENTS = 11
 
 # Vertex-block layout inside the flat outline list.  build_mouth.py uses these
 # to slice the mesh into material groups and to push each group back in Y so
-# the lips read in front of the teeth, tongue and dark interior.
+# the tongue reads in front of the teeth, in front of the dark interior.
 _INNER = 2 * EDGE_SAMPLES - 2                 # 32 aperture points
-_OUTER = _INNER                               # 32 outer lip points
 INNER_START, INNER_END = 0, _INNER
-OUTER_START, OUTER_END = _INNER, _INNER + _OUTER
-TEETH_START, TEETH_END = OUTER_END, OUTER_END + 2 * TEETH_SEGMENTS
+TEETH_START, TEETH_END = INNER_END, INNER_END + 2 * TEETH_SEGMENTS
 TONGUE_START, TONGUE_END = TEETH_END, TEETH_END + 2 * TONGUE_SEGMENTS
 VERT_COUNT = TONGUE_END
 
@@ -246,8 +243,8 @@ def key_name(viseme, level):
 # Outline generation
 # ---------------------------------------------------------------------------
 def _arch(s, exponent):
-    """Lip-edge profile across the mouth: 1 at the centre (s=0), 0 at the
-    corners (s=+-1)."""
+    """Aperture-edge profile across the mouth: 1 at the centre (s=0), 0 at
+    the corners (s=+-1)."""
     v = 1.0 - s * s
     return v ** exponent if v > 0.0 else 0.0
 
@@ -264,11 +261,11 @@ def _edge(half_w, corner_z, height, sign):
 def outline(shape):
     """Flat list of (x, z) points for one mouth shape, in canonical order:
 
-        [0 : 32]  aperture (inner) loop, counter-clockwise from the left
-                  corner over the top and back under the bottom
-        [32: 64]  outer lip loop, same winding, one-to-one with the inner loop
-        [64: 68]  upper teeth quad
-        [68: 80]  tongue
+        [0 : 32]  aperture loop, counter-clockwise from the left corner over
+                  the top and back under the bottom - this IS the mouth's
+                  outer boundary, there is no separate lip band
+        [32: 54]  upper teeth quad
+        [54: 76]  tongue
 
     The order and the count never change, which is what makes these usable as
     Blender shape keys.
@@ -280,42 +277,20 @@ def outline(shape):
     upper_h = aperture * shape["upper"]
     lower_h = aperture * (1.0 - shape["upper"])
 
-    # The lower lip tuck (f/v) lifts the lower edge and thins the lower lip.
+    # The lower-edge tuck (f/v) lifts the lower edge, narrowing the aperture.
     tuck = shape["tuck"]
     lower_h = max(lower_h * (1.0 - 0.55 * tuck), MIN_OPEN * 0.5)
-    t_u = LIP_T_UPPER * (1.0 + ROUND_FATTEN * rnd)
-    t_l = LIP_T_LOWER * (1.0 + ROUND_FATTEN * rnd) * (1.0 - 0.45 * tuck)
 
     inner_upper = _edge(half_w, corner_z, upper_h, +1.0)
     inner_lower = _edge(half_w, corner_z, lower_h, -1.0)
     inner = inner_upper + inner_lower[EDGE_SAMPLES - 2:0:-1]
 
-    # Outer loop: same parameterisation pushed out in X at the corners and in
-    # Z by the lip thickness, so it can never cross the inner loop.
-    half_w_out = half_w + CORNER_OUT
-
-    def outer_upper_z(s):
-        band = 0.12 + 0.88 * _arch(s, ARCH_OUT)
-        bow = 1.0 - CUPID_BOW * max(0.0, 1.0 - (s / 0.30) ** 2)
-        return corner_z + upper_h * _arch(s, ARCH_IN) + t_u * band * bow
-
-    outer_upper, outer_lower = [], []
-    for i in range(EDGE_SAMPLES):
-        s = -1.0 + 2.0 * i / (EDGE_SAMPLES - 1)
-        band = 0.12 + 0.88 * _arch(s, ARCH_OUT)
-        zl = corner_z - lower_h * _arch(s, ARCH_IN) - t_l * band
-        outer_upper.append((s * half_w_out, outer_upper_z(s)))
-        outer_lower.append((s * half_w_out, zl))
-    # Pin the two corner vertices level with the aperture corners so the lip
-    # band closes to a point instead of a blunt end.
-    outer_upper[0] = (-half_w_out, corner_z)
-    outer_upper[-1] = (half_w_out, corner_z)
-    outer = outer_upper + outer_lower[EDGE_SAMPLES - 2:0:-1]
-
-    # Upper teeth: a band hanging from behind the upper lip.  Both its edges
-    # follow the aperture arch and the drop tapers to nothing at the corners,
-    # so the row is a lens that fades away under the lip instead of ending in
-    # a hard rectangle - and at teeth == 0 it is hidden entirely.
+    # Upper teeth: both edges follow the aperture arch and the drop tapers to
+    # nothing at the corners, so the row is a lens that fades away at the
+    # aperture boundary instead of ending in a hard rectangle - and at
+    # teeth == 0 it is hidden entirely.  The top edge is clamped just inside
+    # the aperture boundary so teeth never poke out past the mouth opening
+    # into the face beyond it.
     aperture_h = upper_h + lower_h
     drop = shape["teeth"] * 0.70 * aperture_h
     floor_z = corner_z - lower_h * 0.55
@@ -324,17 +299,14 @@ def outline(shape):
         u = -1.0 + 2.0 * i / (TEETH_SEGMENTS - 1)
         s = u * TEETH_HALF_W
         edge_z = corner_z + upper_h * _arch(s, ARCH_IN)
-        # Tuck the top of the band just inside the upper lip, including under
-        # the cupid's bow, so no sliver of white shows above the mouth.
-        teeth_top.append((s * half_w,
-                          min(edge_z + t_u * 0.9, outer_upper_z(s) - 0.002)))
+        teeth_top.append((s * half_w, edge_z - 0.002))
         teeth_bottom.append((s * half_w,
                              max(edge_z - drop * _arch(u, 0.30), floor_z)))
     teeth = teeth_bottom + teeth_top[::-1]
 
     # Tongue: the floor of the mouth, not a free-floating blob.  Its lower
     # edge IS the lower aperture edge, so the tongue can never spill outside
-    # the lips however high it is raised; the `tongue` parameter only domes
+    # the mouth however high it is raised; the `tongue` parameter only domes
     # it up toward the teeth (fully raised for /th/).
     dome = min((0.06 + 0.88 * shape["tongue"]) * aperture_h, 0.95 * aperture_h)
     tongue_low, tongue_dome = [], []
@@ -346,29 +318,27 @@ def outline(shape):
         tongue_dome.append((s * half_w, low_z + dome * _arch(u, 0.45)))
     tongue = tongue_low + tongue_dome[::-1]
 
-    return inner + outer + teeth + tongue
+    return inner + teeth + tongue
 
 
 # ---------------------------------------------------------------------------
 # Mesh form: the flat outline lifted into 3D.
 #
 # The parts are stacked a little way apart along +Y (away from the camera at
-# -Y) so the lips read in front of everything and the dark mouth cavity
-# behind it.  The tongue sits in FRONT of the teeth: that is what makes the
-# /th/ viseme read, the tongue tip showing between them.  The cavity needs
-# its own copy of the aperture ring - the ring itself belongs to the lip band
-# at y = 0 - so the mesh has _INNER more vertices than the 2D outline.
+# -Y) so the tongue reads in front of the teeth, in front of the dark mouth
+# cavity.  The tongue sits in FRONT of the teeth: that is what makes the
+# /th/ viseme read, the tongue tip showing between them.  The aperture loop
+# itself IS the interior's face - there is no separate lip band to give it a
+# different Y, so it needs no extra copy: the mesh has exactly VERT_COUNT
+# vertices, the same as the 2D outline.
 # ---------------------------------------------------------------------------
-LAYER_Y = {"lips": 0.0, "tongue": 0.004, "teeth": 0.008, "interior": 0.012}
+LAYER_Y = {"interior": 0.012, "teeth": 0.008, "tongue": 0.004}
 
-CAVITY_START = VERT_COUNT
-CAVITY_END = CAVITY_START + _INNER
-MESH_VERT_COUNT = CAVITY_END
+MESH_VERT_COUNT = VERT_COUNT
 
-_LAYERS = ([LAYER_Y["lips"]] * (_INNER + _OUTER)
+_LAYERS = ([LAYER_Y["interior"]] * _INNER
            + [LAYER_Y["teeth"]] * (2 * TEETH_SEGMENTS)
-           + [LAYER_Y["tongue"]] * (2 * TONGUE_SEGMENTS)
-           + [LAYER_Y["interior"]] * _INNER)
+           + [LAYER_Y["tongue"]] * (2 * TONGUE_SEGMENTS))
 
 
 def mesh_vertices(shape):
@@ -377,20 +347,12 @@ def mesh_vertices(shape):
     Always MESH_VERT_COUNT points in the same order, so two shapes differ
     only in position - the requirement for shape keys.
     """
-    points = outline(shape)
-    points = points + points[INNER_START:INNER_END]      # cavity copy
-    return [(x, y, z) for (x, z), y in zip(points, _LAYERS)]
+    return [(x, y, z) for (x, z), y in zip(outline(shape), _LAYERS)]
 
 
 def _build_faces():
     """Face index lists per material group; topology is shape-independent."""
-    lips = []
-    for i in range(_INNER):
-        j = (i + 1) % _INNER
-        lips.append((INNER_START + i, INNER_START + j,
-                     OUTER_START + j, OUTER_START + i))
-    return {"lips": lips,
-            "interior": [tuple(range(CAVITY_START, CAVITY_END))],
+    return {"interior": [tuple(range(INNER_START, INNER_END))],
             "teeth": [tuple(range(TEETH_START, TEETH_END))],
             "tongue": [tuple(range(TONGUE_START, TONGUE_END))]}
 
@@ -406,7 +368,7 @@ if __name__ == "__main__":
         assert len(pts) == VERT_COUNT, (name, len(pts))
         assert len(mesh_vertices(shape)) == MESH_VERT_COUNT, name
         zs = [p[1] for p in pts[INNER_START:INNER_END]]
-        xs = [p[0] for p in pts[OUTER_START:OUTER_END]]
+        xs = [p[0] for p in pts[INNER_START:INNER_END]]
         if level == "medium":
             print(f"  {viseme:4s} aperture {max(zs) - min(zs):.3f} "
                   f"width {max(xs) - min(xs):.3f}")
