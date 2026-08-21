@@ -114,6 +114,17 @@ def _ensure_built():
     _load("build_singer").build_singer()
     _load("build_hand").build_mic_hand()
     _load("build_mic").build_mic_stand(location=STAND_LOCATION)
+    # The singer's idle left hand: reuses the pianist's own hand rig
+    # unchanged (piano/build_hands.py) rather than a bespoke build, since
+    # its anatomy -- a wrist bone with the palm centred ON its axis, only
+    # offset along its length -- is exactly what _mount_relaxed_hand wants
+    # to mount naturally onto an arm with nothing to hold. build_singer()
+    # already claimed the name "Hand_L" for its own blocky stub, so this
+    # one is renamed to avoid Blender silently suffixing it "Hand_L.001".
+    import piano.build_hands as piano_hands
+    left_hand = piano_hands.build_hand("L", bpy.data.collections["Singer"],
+                                       piano_hands._skin_material())
+    left_hand.name = "Hand_L_Detail"
 
 
 def _require(*names):
@@ -195,11 +206,14 @@ def _mount_mic_hand(arm):
     copy_loc = wrist_target.constraints.new('COPY_LOCATION')
     copy_loc.target = mic_hand
     copy_loc.subtarget = "wrist"
-    # COPY_LOCATION on a bone subtarget samples the HEAD by default; the
-    # hand assembly is built around the TAIL (see above), so without this
-    # the singer's actual arm bone lands a bone-length (5.5cm) short of
-    # where the hand visually is -- read as the wrist floating apart from
-    # the forearm.
+    # Sample the TAIL first (head_tail=1.0): unlike the HEAD, the tail's
+    # world position is rotation-invariant (see _stamp -- the pre-
+    # translation by -tail_local cancels out whatever `rot` is), always
+    # exactly wrist_pos. That makes it a stable target to settle the arm's
+    # IK against while the hand still has the first pass's placeholder
+    # rotation. Sampling the HEAD here instead would be circular: the
+    # HEAD's world position depends on the hand's rotation, which itself
+    # isn't final until after this settle, based on the resulting elbow.
     copy_loc.head_tail = 1.0
 
     # Re-aim the elbow pole so the arm bends out to the side rather than
@@ -217,11 +231,85 @@ def _mount_mic_hand(arm):
     _stamp(M((shaft_dir, y_axis, z_axis)).transposed().to_4x4())
     bpy.context.view_layer.update()
 
+    # Now that the hand's rotation is final, the wrist bone's HEAD -- the
+    # "wrist end" opposite the fingers, see build_hand._build_wrist -- has
+    # a fixed world position 5.5cm back up the shaft from the grip. Point
+    # the constraint there instead of the grip-point TAIL so the forearm's
+    # own IK reaches the actual wrist joint, not the middle of the fist.
+    copy_loc.head_tail = 0.0
+    bpy.context.view_layer.update()
+
     stub = bpy.data.objects.get("Hand_R")
     if stub is not None:
         stub.hide_viewport = True
         stub.hide_render = True
     return mic_hand
+
+
+# On piano/build_hands.py's own rig (rest pose, no roll on any bone -- see
+# its FINGERS docstring), a finger's local Y is its length and local Z is
+# the axis flexion curls it away from: a NEGATIVE local-x pose rotation
+# moves the tip toward -z (confirmed empirically -- 30 deg gave a tail
+# delta of (0, -0.006, -0.022), i.e. almost entirely -z), so -z is the
+# PALMAR direction (what the palm faces) and +z is dorsal (back of hand).
+PALM_CURL_DEG = {"prox": -8.0, "mid": -12.0, "dist": -8.0}
+
+
+def _mount_relaxed_hand(arm):
+    """Mount the idle left hand (piano/build_hands.py's own rig, see
+    _ensure_built) on the singer's left wrist exactly the way
+    animate_pianist._wire_arms mounts a hand: COPY_LOCATION straight onto
+    the hand's wrist bone at its default HEAD sample -- no head_tail
+    override, because this hand's palm is centred on that bone's own axis
+    (the fix in build_hand.py's own palm_center), so the head IS the joint
+    with nothing else to reach past.
+
+    With nothing to hold, there is no mic-shaft axis to pin the hand's
+    rotation to the way the mic hand's shaft does -- but the ROLL about the
+    forearm (which way the palm faces) still needs pinning to something, or
+    to_track_quat is free to pick whatever roll keeps some arbitrary axis
+    closest to world +z, unrelated to a natural hanging-arm pose. Pin it to
+    the palm (-z, see above) facing medially -- world -x for this LEFT arm,
+    which sits on the +x side of the body (build_singer.shoulder) -- so the
+    hand rests the way an arm actually hangs at your side, palm toward the
+    leg, not turned out to whatever angle the solver happened to land on.
+    Finally, curl every finger (see PALM_CURL_DEG) a few degrees so the
+    idle hand reads as relaxed rather than a stiff, flat plane."""
+    hand = bpy.data.objects["Hand_L_Detail"]
+    wrist_target = bpy.data.objects["Wrist_L"]
+    target_pos = V(wrist_target.location)
+
+    elbow_world = (arm.matrix_world @ arm.pose.bones["forearm.L"].matrix).translation
+    forearm_dir = (target_pos - elbow_world).normalized()
+
+    medial = V((-1.0, 0.0, 0.0))
+    dorsal_dir = (medial - medial.dot(forearm_dir) * forearm_dir).normalized() * -1.0
+    x_axis = forearm_dir.cross(dorsal_dir)
+    rot = M((x_axis, forearm_dir, dorsal_dir)).transposed().to_4x4()
+
+    head_local = V(hand.data.bones["wrist"].head_local)
+    hand.matrix_world = M.Translation(target_pos) @ rot @ M.Translation(-head_local)
+    bpy.context.view_layer.update()
+
+    for f in range(1, 6):
+        for seg, deg in PALM_CURL_DEG.items():
+            pb = hand.pose.bones[f"f{f}_{seg}"]
+            pb.rotation_mode = 'XYZ'
+            pb.rotation_euler = (math.radians(deg), 0.0, 0.0)
+    bpy.context.view_layer.update()
+
+    for con in list(wrist_target.constraints):
+        wrist_target.constraints.remove(con)
+    copy_loc = wrist_target.constraints.new('COPY_LOCATION')
+    copy_loc.target = hand
+    copy_loc.subtarget = "wrist"
+    bpy.context.view_layer.update()
+
+    stub = bpy.data.objects.get("Hand_L")
+    if stub is not None:
+        stub.hide_viewport = True
+        stub.hide_render = True
+    return hand
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +372,12 @@ def animate_singer(timeline_json=None, fps=24, frame_start=1, build=True,
     scene = bpy.context.scene
     if build:
         _ensure_built()
-    _require("Singer", "Mouth", "MicHand", "MicStand")
+    _require("Singer", "Mouth", "MicHand", "MicStand", "Hand_L_Detail")
 
     arm = bpy.data.objects["Singer"]
     _mount_mouth(arm)
     _mount_mic_hand(arm)
+    _mount_relaxed_hand(arm)
 
     animate_mouth = _load("animate_mouth").animate_mouth
     frame_start, frame_end = animate_mouth(timeline_json, fps=fps,

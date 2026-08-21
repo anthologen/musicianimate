@@ -6,18 +6,27 @@ PROPORTIONS of FRET_FINGERS, PICK_FIST's knuckle x-spread (already
 right-hand chirality) and the ``_curled_finger`` cumulative-rotation
 TECHNIQUE outright.
 
-What it does NOT reuse verbatim is PICK_FIST's absolute lengths and flex
-angles: those were tuned to curl a real adult finger (~9cm) down to a
-PINCH near the palm, not to wrap a ~19mm-radius circle. Used as-is on a
-circle this small, the (long) proximal phalanx alone overshoots past the
-far side before the finger has flexed a third of the way, so the fingers
-read as resting ON TOP of the handle rather than wrapped around it. Solved
-numerically instead (see the module docstring's tuning note below):
-FINGER_LENGTH_SCALE shrinks FRET_FINGERS's lengths (keeping their relative
-proportions) until a smooth, monotonically-tightening curl closes to the
-handle's own radius over FINGER_TOTAL_FLEX degrees, split prox/mid/dist by
-FINGER_FLEX_FRACS -- the low-poly equivalent of a hand making a properly
-closed fist around a slim object instead of a loose one around a fat neck.
+What it does NOT reuse verbatim is PICK_FIST's own flex angles: those were
+tuned for gripping a fat guitar neck, and this needs a much tighter closure
+around a slim mic handle. Two earlier versions of this rig tried to force
+that closure by sweeping each finger around a circle centred on the mic's
+own axis (shrinking the length to stop it overshooting, then widening it
+again with a different flex split) -- both numerically closed the gap, but
+even the better of the two read as fingers laid ALONGSIDE the handle, not
+curled around it: from the back of the hand, the proximal segments sat
+right at the top of that circle with the handle exposed underneath, because
+a circular sweep never actually reaches OVER the object the way a real
+finger's hinge does.
+
+Rebuilt on _curled_finger's own technique instead (verbatim, not adapted):
+each finger extends forward from its knuckle, then folds through a
+cumulative flexion about its own local x -- the one motion a finger's
+joints actually make. At real FRET_FINGERS length with the flex split
+tuned below, that fold swings the knuckle out into the bulge a real fist's
+own knuckles make, then closes the fingertip back in to within a couple of
+mm of the shaft -- so the handle disappears UNDER the curled fingers from
+every angle, the way it does in a real gripped fist, rather than just
+having its silhouette's radius match at one single point.
 
 Local frame, matching PICK_FIST's own: +x is the knuckle spread, which
 doubles as the mic's own shaft axis -- the mic passes THROUGH the fist the
@@ -62,40 +71,81 @@ except ImportError:  # loaded as a loose script via importlib
 ARMATURE_NAME = "MicHand"
 
 # ---------------------------------------------------------------------------
-# Wrap geometry: each finger's knuckle sits on a circle of this radius (a
-# hair outside the mic handle's own radius) and curls, via the SAME
-# cumulative-rotation technique as guitar/build_hands._curled_finger, closing
-# smoothly down to the handle instead of resting on top of it. Tuned
-# numerically (scratch script, not checked in): for each finger, shrink
-# FRET_FINGERS's (prox, mid, dist) lengths by FINGER_LENGTH_SCALE, split
-# FINGER_TOTAL_FLEX degrees of cumulative curl across the three joints by
-# FINGER_FLEX_FRACS, and the resulting joint-by-joint distance from the
-# shaft axis DECREASES MONOTONICALLY from the WRAP_RADIUS knuckle down to
-# 3-9mm -- inside the ~11mm handle radius, i.e. every finger closes snugly
-# around it with a hair of interpenetration (reads as a snug grip, not a
-# gap) rather than flaring out past the far side and swinging back (what
-# PICK_FIST's own, much longer-reaching, flex angles did here).
+# Wrap geometry. Each finger's knuckle sits at WRAP_RADIUS -- a hair outside
+# the mic handle's own radius -- but unlike a knuckle-line's usual meaning
+# elsewhere in this rig, it is now only the STARTING point of a real fold,
+# not a circle every joint is forced to stay on: _curled_finger extends the
+# finger out from there and lets the cumulative flexion swing it through
+# its own natural arc, closing to the shaft only once, at the tip, rather
+# than trying to hold every joint near the object's radius throughout.
+#
+# Tuned numerically (scratch script, not checked in) at FRET_FINGERS' real,
+# unscaled length: search FINGER_TOTAL_FLEX and the FINGER_FLEX_FRACS split
+# for whichever keeps the fingertip closing to within a couple of mm of the
+# shaft, REQUIRING every joint (including the MCP/knuckle itself) to carry
+# a reasonable share of the flex. An earlier search minimised tip distance
+# alone and found a split that put almost none of the curl at the knuckle
+# (17%) -- the proximal phalanx stayed nearly straight, shooting the whole
+# finger out to a 34mm bulge before the other two joints did all the work
+# snapping it back in over a much shorter distance. Numerically that still
+# closed near the shaft, but it reads as a flagpole with a hook on the end,
+# not a curled finger -- there is no gentle arc, because there is barely
+# any bend where the biggest joint in the chain is. Every joint here
+# carries at least 22% of the total instead, which is what turns that hook
+# into a rounded C the object actually sits inside of.
 # ---------------------------------------------------------------------------
 WRAP_RADIUS = build_mic.MIC_HANDLE_RADIUS + 0.008
 KNUCKLE_ANGLE = 90.0        # deg from +y toward +z -- back of the hand, top
-FINGER_LENGTH_SCALE = 0.32
-FINGER_FLEX_FRACS = (0.40, 0.35, 0.25)
-FINGER_TOTAL_FLEX = 140.0
+FINGER_FLEX_FRACS = (0.24, 0.40, 0.36)
+FINGER_TOTAL_FLEX = 318.0
 
 # Thumb: starts on the front/near side of the circle (the gap the fingers'
-# own ~175 deg sweep leaves open) and curls the SAME rotational sense
-# (inward) back toward the fingers' own starting knuckle, so its pad closes
-# over the top of the curled fingers -- an over-the-top power grip rather
-# than trying to span the whole remaining gap to their fingertips.
+# own ~175 deg sweep leaves open) and folds the same way, closing back
+# in toward the shaft to lie over the top of the curled fingers -- an
+# over-the-top power grip. An earlier, shorter thumb (32mm total) closed
+# just as cleanly numerically, but next to the fingers' own full FRET_
+# FINGERS length (82-102mm) it read as a stub, not a shorter digit -- a
+# real thumb is shorter than the fingers (~55-65mm against theirs), not a
+# fraction that small. Lengths below are close to that real ratio (~0.6 of
+# the fingers' own average); flex tuned the same balanced-joint way.
 THUMB_ANGLE = 330.0
-THUMB_X = -0.044         # beyond the index, the thumb's own edge (PICK_THUMB_AXIS side)
-THUMB_LENGTHS = (0.015, 0.012)
-THUMB_FLEX_FRACS = (0.55, 0.45)
-THUMB_TOTAL_FLEX = 100.0
+# +x is toward the windscreen, -x toward the butt (see _mount_mic's 90 deg
+# remap of the mic's own +z-toward-tip convention onto this rig's +x-shaft
+# one) -- PICK_FIST's own x-spread runs thumb/index negative, pinky
+# positive, which put the thumb+index cluster at the BUTT end instead of
+# the grille end a real raised-mic grip has them at (the reference photo).
+# Negated below (both here and where PICK_FIST's own knuckle x is read) to
+# flip which end each finger cluster sits at, without touching any of the
+# y-z curl geometry that actually shapes the grip.
+THUMB_X = 0.044          # beyond the index, the thumb's own edge (PICK_THUMB_AXIS side)
+THUMB_LENGTHS = (0.035, 0.020)
+THUMB_FLEX_FRACS = (0.30, 0.70)
+THUMB_TOTAL_FLEX = 222.0
 
-# Sits flush behind the knuckle line (same KNUCKLE_ANGLE direction, i.e.
-# +z since that angle is 90 deg), spanning the fingers' x-spread.
-PALM_SIZE = (0.070, 0.030, 0.052)
+# The wrist bone itself (see _build_wrist): head is the "wrist end" that
+# meets the forearm, tail is the grip point every finger/palm/mic is built
+# around (== the origin of this whole bone-parent space, see _BONE_TAIL).
+WRIST_HEAD_LOCAL = (0.0, -0.025, 0.0)
+WRIST_TAIL_LOCAL = (0.0, 0.030, 0.0)
+WRIST_SPAN = WRIST_TAIL_LOCAL[1] - WRIST_HEAD_LOCAL[1]   # 0.055
+
+# Spans the fingers' x-spread, and in y reaches from the knuckle line (0,
+# where PALM_SIZE used to be centered) all the way back to the wrist head
+# at -WRIST_SPAN -- otherwise the palm is a thin slab hovering near the
+# grip point with nothing bridging it to the wrist joint the forearm's IK
+# now (correctly) reaches, which reads as the hand floating apart from the
+# arm even though the joint itself is positioned right.
+#
+# Thickness (z) was 0.052 -- more than double a real palm's ~24mm (see
+# piano/build_hands.PALM_SIZE, whose z is 0.024) -- which read as a slab
+# next to that hand's slimmer one. Brought down to just enough to still
+# reach the knuckle line at z=WRAP_RADIUS from a centre at z=0 (half the
+# thickness must be >= WRAP_RADIUS, ~19mm, or the palm stops short of the
+# fingers and re-opens the gap the on-axis centring fix closed), with a
+# millimetre of margin rather than matched exactly, since this hand -- a
+# fist closed around a mic -- is inherently bulkier through the knuckles
+# than the pianist's open, flat one.
+PALM_SIZE = (0.070, WRIST_SPAN, 2.0 * WRAP_RADIUS + 0.002)
 # Bone-parent space (see _bone_box) is relative to the wrist bone's TAIL,
 # which is also the point animate_singer.py's mount stamps onto the arm's
 # wrist joint (WRIST_R_TARGET) -- so leaving this at the origin (no offset)
@@ -157,27 +207,38 @@ def _seg_box(arm_obj, coll, mat, width, height, p0, p1):
              tuple(center - _BONE_TAIL), rotation=rot)
 
 
-def _curled_wrap(angle_deg, lengths, flex_fracs, total_flex, inward=True):
-    """Points knuckle -> ... -> tip for a finger that starts tangent to the
-    WRAP_RADIUS circle at `angle_deg` (measured from +y toward +z) and
-    curls -- via the same cumulative-rotation-about-x technique as
-    guitar/build_hands._curled_finger -- around the handle instead of down
-    to a point. `total_flex` degrees of cumulative curl are split across
-    the joints by `flex_fracs`.
+def _curled_finger(knuckle, lengths, flex_deg):
+    """Points knuckle -> ... -> tip for a finger extending +y from `knuckle`
+    and folding through a CUMULATIVE flexion about local x -- verbatim the
+    same technique as guitar/build_hands._curled_finger (a finger's joints
+    only ever hinge one way, so each phalanx adds its own flex on top of
+    every joint before it, rather than each aiming independently)."""
+    pts = [V(knuckle)]
+    cum = 0.0
+    for length, flex in zip(lengths, flex_deg):
+        cum += flex
+        d = M.Rotation(math.radians(-cum), 3, 'X') @ V((0.0, 1.0, 0.0))
+        pts.append(pts[-1] + d * length)
+    return pts
 
-    At a cumulative rotation of 90 deg the swept direction points exactly
-    along the knuckle's own radial line; `inward` picks which of the two
-    rotation senses makes that 90 deg point INTO the axis (wrapping the
-    handle) rather than away from it (the fist opening up)."""
+
+def _curled_thumb(angle_deg, lengths, flex_deg):
+    """The same fold as _curled_finger, but for a knuckle that does not sit
+    at the top of the WRAP_RADIUS circle (KNUCKLE_ANGLE=90, where +y is
+    already the natural "extend forward" direction) -- the thumb starts at
+    THUMB_ANGLE instead, so its own "extend" and "fold inward" directions
+    are the tangent and inward radial of the circle AT THAT ANGLE, not the
+    fixed world axes _curled_finger assumes are already lined up."""
     a = math.radians(angle_deg)
     knuckle = V((0.0, WRAP_RADIUS * math.cos(a), WRAP_RADIUS * math.sin(a)))
     tangent = V((0.0, -math.sin(a), math.cos(a)))
-    sign = 1.0 if inward else -1.0
+    radial = V((0.0, math.cos(a), math.sin(a)))
     pts = [knuckle]
     cum = 0.0
-    for length, frac in zip(lengths, flex_fracs):
-        cum += frac * total_flex
-        d = M.Rotation(math.radians(sign * cum), 3, 'X') @ tangent
+    for length, flex in zip(lengths, flex_deg):
+        cum += flex
+        theta = math.radians(cum)
+        d = tangent * math.cos(theta) - radial * math.sin(theta)
         pts.append(pts[-1] + d * length)
     return pts
 
@@ -186,8 +247,8 @@ def _build_wrist(arm_obj):
     bpy.ops.object.mode_set(mode='EDIT')
     eb = arm_obj.data.edit_bones
     wrist = eb.new("wrist")
-    wrist.head = (0.0, -0.025, 0.0)
-    wrist.tail = (0.0, 0.030, 0.0)
+    wrist.head = WRIST_HEAD_LOCAL
+    wrist.tail = WRIST_TAIL_LOCAL
     bpy.ops.object.mode_set(mode='OBJECT')
     arm_obj.pose.bones["wrist"].rotation_mode = 'XYZ'
 
@@ -231,33 +292,46 @@ def build_mic_hand():
 
     mat = _mat()
 
-    # Back-of-hand mass: flush behind the knuckle line, same direction as
-    # KNUCKLE_ANGLE (== 90 deg == +z), spanning the fingers' x-spread.
-    palm_center = V((0.0, 0.0, WRAP_RADIUS + PALM_SIZE[2] / 2.0))
+    # Centred ON the wrist bone's own axis (x=0, z=0), the same anatomy as
+    # the pianist's hand (piano/build_hands.py: PALM_CENTRE sits right on
+    # the bone, only ever offset along its length) -- NOT pushed out to
+    # z=WRAP_RADIUS to sit "behind the knuckle line" as this used to do.
+    # That offset put the whole palm mass to one side of the wrist bone's
+    # own centreline instead of straddling it the way the forearm's own
+    # box does, which is what read as the hand hinging off the EDGE of the
+    # arm rather than growing out of a natural, centred wrist joint. In y,
+    # spans from the knuckle line back to the wrist head so it bridges to
+    # the forearm (see PALM_SIZE); half its own thickness (0.026) already
+    # reaches past the knuckle line at z=WRAP_RADIUS (0.019), so it still
+    # meets the fingers with no gap.
+    palm_center = V((0.0, -WRIST_SPAN / 2.0, 0.0))
     _bone_box(arm_obj, coll, mat, PALM_SIZE, tuple(palm_center - _BONE_TAIL))
 
     # Four full fingers, spread along x (PICK_FIST's own knuckle-x values,
-    # already right-hand chirality), each curling in its own y-z plane
-    # around the WRAP_RADIUS circle -- lengths shrunk (proportions kept) so
-    # the curl actually closes to the handle instead of overshooting past
-    # it (see FINGER_LENGTH_SCALE above).
-    for name, (knuckle_xyz, lengths0, _pick_flex) in PICK_FIST.items():
-        x = knuckle_xyz[0]
-        lengths = tuple(l * FINGER_LENGTH_SCALE for l in lengths0)
-        pts = _curled_wrap(KNUCKLE_ANGLE, lengths, FINGER_FLEX_FRACS,
-                           FINGER_TOTAL_FLEX, inward=True)
+    # already right-hand chirality but negated -- see THUMB_X), each
+    # folding in its own y-z plane from a knuckle at KNUCKLE_ANGLE on the
+    # WRAP_RADIUS circle (see the wrap-geometry tuning note above) at their
+    # own real, full length.
+    finger_flex = tuple(f * FINGER_TOTAL_FLEX for f in FINGER_FLEX_FRACS)
+    a90 = math.radians(KNUCKLE_ANGLE)
+    finger_knuckle = (0.0, WRAP_RADIUS * math.cos(a90), WRAP_RADIUS * math.sin(a90))
+    for name, (knuckle_xyz, lengths, _pick_flex) in PICK_FIST.items():
+        x = -knuckle_xyz[0]
+        pts = _curled_finger(finger_knuckle, lengths, finger_flex)
         for seg, (p0, p1) in zip(("prox", "mid", "dist"), zip(pts[:-1], pts[1:])):
             w, h = _finger_cross(name, seg)
             a, b = V((x, p0.y, p0.z)), V((x, p1.y, p1.z))
             _seg_box(arm_obj, coll, mat, w, h, tuple(a), tuple(b))
 
-    # Thumb: curls inward from the front/near side of the circle, closing
-    # back over the top of the curled fingers' own knuckle line.
-    tpts = _curled_wrap(THUMB_ANGLE, THUMB_LENGTHS, THUMB_FLEX_FRACS,
-                        THUMB_TOTAL_FLEX, inward=True)
+    # Thumb: folds inward from the front/near side of the circle, closing
+    # back over the top of the curled fingers to lie across the shaft.
+    thumb_flex = tuple(f * THUMB_TOTAL_FLEX for f in THUMB_FLEX_FRACS)
+    tpts = _curled_thumb(THUMB_ANGLE, THUMB_LENGTHS, thumb_flex)
     tp = [V((THUMB_X, p.y, p.z)) for p in tpts]
-    _seg_box(arm_obj, coll, mat, 0.018, 0.017, tuple(tp[0]), tuple(tp[1]))
-    _seg_box(arm_obj, coll, mat, 0.016, 0.015, tuple(tp[1]), tuple(tp[2]))
+    w0, h0 = _finger_cross(1, "prox")
+    w1, h1 = _finger_cross(1, "mid")
+    _seg_box(arm_obj, coll, mat, w0, h0, tuple(tp[0]), tuple(tp[1]))
+    _seg_box(arm_obj, coll, mat, w1, h1, tuple(tp[1]), tuple(tp[2]))
 
     _mount_mic(arm_obj, coll)
 
